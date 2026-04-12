@@ -18,7 +18,7 @@
 #include <string.h>
 #include <sys/time.h>
 #include "libretro.h"
-#include "scene.pb-c.h"
+#include "scene.h"
 
 retro_log_printf_t log_cb;
 
@@ -37,7 +37,7 @@ typedef struct {
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
-static Scene *scene = NULL;
+static Scene scene = { 0 };
 static void *pixel_buffer = NULL;
 static size_t pixel_buffer_size = 0;
 static int pixel_buffer_bpp = 4;
@@ -72,9 +72,9 @@ void retro_set_environment(retro_environment_t cb)
 
     static const struct retro_system_content_info_override content_overrides[] = {
         {
-            "pbbin|pbbin.gz", /* extensions */
-            false,   /* need_fullpath */
-            false    /* persistent_data */
+            "lbm", /* extensions */
+            false, /* need_fullpath */
+            false  /* persistent_data */
         },
         { NULL, false, false }
     };
@@ -99,18 +99,18 @@ void retro_get_system_info(struct retro_system_info *info)
 #define GIT_VERSION ""
 #endif
     info->library_version = "v1.0.0" GIT_VERSION;
-    info->valid_extensions = "pbbin|pbbin.gz";
+    info->valid_extensions = "lbm";
     info->block_extract = false;
     info->need_fullpath = false;
 }
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-    info->geometry.base_width  = scene->width;
-    info->geometry.base_height = scene->height;
-    info->geometry.max_width = scene->width;
-    info->geometry.max_height = scene->height;
-    info->geometry.aspect_ratio  = (float)scene->width / (float)scene->height;
+    info->geometry.base_width  = scene.width;
+    info->geometry.base_height = scene.height;
+    info->geometry.max_width = scene.width;
+    info->geometry.max_height = scene.height;
+    info->geometry.aspect_ratio  = (float) scene.width / (float) scene.height;
     info->timing.fps             = FPS;
     info->timing.sample_rate     = SOUND_FREQUENCY;
 }
@@ -172,9 +172,8 @@ bool retro_load_game(const struct retro_game_info *info)
         return false;
     }
 
-    scene = scene__unpack(NULL, buffer_size, buffer);
-    if (scene == NULL) {
-        log_cb(RETRO_LOG_ERROR, "Protobuf unpacking failed\n");
+    if (!scene_read_lbm_mem(&scene, buffer, buffer_size)) {
+        log_cb(RETRO_LOG_ERROR, "Failed to read LBM data\n");
         return false;
     }
 
@@ -193,30 +192,30 @@ bool retro_load_game(const struct retro_game_info *info)
     }
 
     // Initialize pixel buffer
-    pixel_buffer_size = scene->width * scene->height * pixel_buffer_bpp;
+    pixel_buffer_size = scene.width * scene.height * pixel_buffer_bpp;
     if ((pixel_buffer = malloc(pixel_buffer_size)) == NULL) {
         log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for pixel buffer\n");
         return false;
     }
 
     // Initialize dynamic palette
-    palette = malloc(scene->n_palette * sizeof(uint32_t));
+    palette = malloc(scene.n_palette * sizeof(uint32_t));
     if (palette == NULL) {
         log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for palette\n");
         free_buffers();
         return false;
     }
-    memcpy(palette, scene->palette, scene->n_palette * sizeof(uint32_t));
+    memcpy(palette, scene.palette, scene.n_palette * sizeof(uint32_t));
 
     // Initialize cycle states
-    cycle_states = malloc(scene->n_cycles * sizeof(CycleState));
+    cycle_states = malloc(scene.n_cycles * sizeof(CycleState));
     if (cycle_states == NULL) { 
         log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for cycle states\n");
         free_buffers();
         return false;
     }
-    for (size_t i = 0; i < scene->n_cycles; i++) {
-        Scene__Cycle *cycle = scene->cycles[i];
+    for (size_t i = 0; i < scene.n_cycles; i++) {
+        Cycle *cycle = &scene.cycles[i];
         int cycle_size = (cycle->high - cycle->low) + 1;
         cycle_states[i] = (CycleState) {
             .cycle_rate_us = (unsigned long)(RATE_SCALE_US / (FPS * cycle->rate)),
@@ -277,13 +276,12 @@ void retro_run(void)
     cycle_palette();
     update_pixel_buffer();
 
-    video_cb(pixel_buffer, scene->width, scene->height, scene->width * pixel_buffer_bpp);
+    video_cb(pixel_buffer, scene.width, scene.height, scene.width * pixel_buffer_bpp);
 }
 
 static void free_buffers()
 {
-    scene__free_unpacked(scene, NULL);
-    scene = NULL;
+    scene_free(&scene);
     free(pixel_buffer);
     pixel_buffer = NULL;
     pixel_buffer_size = 0;
@@ -320,8 +318,8 @@ static uint32_t blend_colors(uint32_t c1, uint32_t c2, float ratio)
 static void cycle_palette()
 {
     unsigned long current_time = micros();
-    for (size_t i = 0; i < scene->n_cycles; i++) {
-        Scene__Cycle *cycle = scene->cycles[i];
+    for (size_t i = 0; i < scene.n_cycles; i++) {
+        Cycle *cycle = &scene.cycles[i];
         if (cycle->rate == 0) {
             continue; // No cycling
         }
@@ -340,8 +338,8 @@ static void cycle_palette()
 
         // Update the palette entries for this cycle
         for (int j = 0; j < state->length; j++) {
-            uint32_t pcolor = scene->palette[cycle->low + (state->poffset + j) % state->length];
-            uint32_t color = scene->palette[cycle->low + (state->offset + j) % state->length];
+            uint32_t pcolor = scene.palette[cycle->low + (state->poffset + j) % state->length];
+            uint32_t color = scene.palette[cycle->low + (state->offset + j) % state->length];
             uint32_t blended_color = color_blending_enabled
                 ? blend_colors(color, pcolor, ratio)
                 : color;
@@ -359,8 +357,8 @@ static void update_pixel_buffer()
 {
     int i;
     unsigned int *pp;
-    for (i = 0, pp = pixel_buffer; i < scene->width * scene->height; i++, pp++) {
-        unsigned int index = scene->pixels.data[i];
+    for (i = 0, pp = pixel_buffer; i < scene.width * scene.height; i++, pp++) {
+        unsigned int index = scene.pixels[i];
         *pp = palette[index];
     }
 }

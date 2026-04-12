@@ -8,5 +8,3 @@ PROJECT_SRC_DIR := $(CORE_DIR)
 INCFLAGS += $(foreach dir,$(PROJECT_SRC_DIR),-I$(dir)) -I$(LIBRETRO_DIR)
 
 SOURCES_C += $(foreach dir,$(PROJECT_SRC_DIR),$(wildcard $(dir)/*.c))
-
-LDFLAGS += -lprotobuf-c
