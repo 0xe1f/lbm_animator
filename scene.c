@@ -22,6 +22,7 @@
 
 #include "scene.h"
 
+// #define LOG_VERBOSE
 #define CYCLE_CAP_INITIAL     16
 #define CYCLE_CAP_INCREMENT   16
 #define PALETTE_CAP_INITIAL   64
@@ -124,7 +125,9 @@ static bool read_form_chunk(struct ParseState *state, uint32_t length)
     }
 
     header.chunk_len = BE2LE32(header.chunk_len);
+#ifdef LOG_VERBOSE
     printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
+#endif
 
     char form_type[4];
     if (fread(form_type, 1, 4, state->f) != 4) {
@@ -156,7 +159,9 @@ static bool read_pbm_chunk(struct ParseState *state, uint32_t length)
         }
 
         header.chunk_len = BE2LE32(header.chunk_len);
+#ifdef LOG_VERBOSE
         printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
+#endif
         if (strncmp(header.chunk_id, "BMHD", 4) == 0) {
             if (!read_bmhd_chunk(state, header.chunk_len)) {
                 return false;
@@ -178,8 +183,10 @@ static bool read_pbm_chunk(struct ParseState *state, uint32_t length)
                 return false;
             }
         } else {
+#ifdef LOG_VERBOSE
             fprintf(stderr, "Unsupported chunk type: '%.4s' (%d bytes)\n",
                 header.chunk_id, header.chunk_len);
+#endif
             fseek(state->f, header.chunk_len, SEEK_CUR);
         }
 
@@ -422,26 +429,20 @@ bool scene_read_lbm(Scene *scene, const char *path)
 
 bool scene_read_lbm_mem(Scene *scene, const void *data, size_t size)
 {
-    // Create a temporary file and write the data to it
-    FILE *temp_file = tmpfile();
-    if (temp_file == NULL) {
-        fprintf(stderr, "Failed to create temporary file\n");
+    // Open an in-memory file stream with data
+    FILE *mem_file = fmemopen((void *)data, size, "rb");
+    if (mem_file == NULL) {
+        fprintf(stderr, "Failed to open in-memory file stream\n");
         return false;
     }
 
-    if (fwrite(data, 1, size, temp_file) != size) {
-        fprintf(stderr, "Failed to write data to temporary file\n");
-        fclose(temp_file);
-        return false;
-    }
-    rewind(temp_file);
-
-    struct ParseState state = { .scene = scene, .f = temp_file };
+    // Create a ParseState and read the LBM data as usual
+    struct ParseState state = { .scene = scene, .f = mem_file };
     bool success = read_lbm(&state);
     if (!success) {
         scene_free(scene);
     }
-    fclose(temp_file);
+    fclose(mem_file);
 
     return success;
 }

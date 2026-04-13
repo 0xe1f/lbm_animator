@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <vorbis/vorbisfile.h>
 #include "libretro.h"
 #include "scene.h"
 
@@ -33,6 +35,7 @@ typedef struct {
 #define SOUND_FREQUENCY 44100
 #define FPS             60.0
 #define RATE_SCALE_US   (16384UL * 1000000UL)
+#define AUDIO_BUFFER_SIZE ((SOUND_FREQUENCY / (int) FPS) * 2 * 2)
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -44,6 +47,10 @@ static int pixel_buffer_bpp = 4;
 static CycleState *cycle_states = NULL;
 static uint32_t *palette = NULL;
 static bool color_blending_enabled = true;
+static FILE *audio_file = NULL;
+static OggVorbis_File vorbis_file = { 0 };
+static char sound_buffer[AUDIO_BUFFER_SIZE] = { 0 };
+static char *system_directory = NULL;
 
 static retro_video_refresh_t video_cb;
 static retro_input_poll_t input_poll_cb;
@@ -57,6 +64,7 @@ static uint32_t blend_colors(uint32_t c1, uint32_t c2, float delta);
 static void cycle_palette();
 static void update_pixel_buffer();
 static void check_variables();
+static void fill_audio_buffer();
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -184,6 +192,34 @@ bool retro_load_game(const struct retro_game_info *info)
 
     check_variables();
 
+    char audio_path[2048];
+    struct retro_game_info_ext *info_ext = NULL;
+    if (environ_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &info_ext)) {
+        snprintf(audio_path, sizeof(audio_path), "%s/%s.ogg",
+            system_directory, info_ext->name);
+    }
+
+    // Check to see if file exists; if not, disable audio
+    if (*audio_path && access(audio_path, F_OK) != 0) {
+        log_cb(RETRO_LOG_INFO, "Audio file not found: %s\n", audio_path);
+        *audio_path = '\0';
+    }
+
+    // Init audio
+    if (*audio_path) {
+        audio_file = fopen(audio_path, "rb");
+        if (audio_file == NULL) {
+            log_cb(RETRO_LOG_WARN, "Audio file not found: %s\n", audio_path);
+        } else if (ov_open_callbacks(audio_file, &vorbis_file, NULL, 0, OV_CALLBACKS_NOCLOSE) < 0) {
+            log_cb(RETRO_LOG_WARN, "Error opening audio stream: %s\n", audio_path);
+            fclose(audio_file);
+            audio_file = NULL;
+        } else {
+            log_cb(RETRO_LOG_INFO, "Audio file loaded: %s\n", audio_path);
+        }
+    }
+
+    // Init graphics
     unsigned int format = RETRO_PIXEL_FORMAT_XRGB8888;
     if (environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format)) {
         log_cb(RETRO_LOG_INFO, "Pixel format set to XRGB8888\n");
@@ -261,6 +297,10 @@ void retro_init(void)
     } else {
         log_cb = NULL;
     }
+
+    if (!environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_directory)) {
+        log_cb(RETRO_LOG_WARN, "System directory not available.\n");
+    }
 }
 
 void retro_deinit(void)
@@ -275,7 +315,7 @@ void retro_run(void)
 {
     cycle_palette();
     update_pixel_buffer();
-
+    fill_audio_buffer();
     video_cb(pixel_buffer, scene.width, scene.height, scene.width * pixel_buffer_bpp);
 }
 
@@ -289,6 +329,11 @@ static void free_buffers()
     cycle_states = NULL;
     free(palette);
     palette = NULL;
+    ov_clear(&vorbis_file);
+    if (audio_file) {
+        fclose(audio_file);
+        audio_file = NULL;
+    }
 }
 
 static unsigned long micros()
@@ -371,5 +416,30 @@ static void check_variables()
     environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var);
     if (var.value && strcmp(var.value, "disabled") == 0) {
         color_blending_enabled = false;
+    }
+}
+
+static void fill_audio_buffer()
+{
+    if (audio_file == NULL) {
+        return; // No audio
+    }
+
+    // Read enough to fill the audio buffer
+    static int current_section = 0;
+    int play = sizeof(sound_buffer);
+    while (play > 0) {
+        long ret = ov_read(&vorbis_file, sound_buffer, sizeof(sound_buffer), 0, 2, 1, &current_section);
+        if (ret == 0) {
+            // End of stream, loop back to start
+            ov_pcm_seek(&vorbis_file, 0);
+        } else if (ret < 0) {
+            // Error in audio stream; ignore
+        } else {
+            // Convert bytes read to frames and send to audio callback
+            unsigned int frames = ret / 4; // Assuming 16-bit stereo audio
+            audio_cb((const int16_t *) sound_buffer, frames); // Assuming 16-bit stereo audio
+        }
+        play -= ret;
     }
 }
