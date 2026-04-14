@@ -81,6 +81,7 @@ struct ColorMapEntry {
 };
 
 static bool read_lbm(struct ParseState *state);
+static bool read_root_chunk(struct ParseState *state, uint32_t length);
 static bool read_form_chunk(struct ParseState *state, uint32_t length);
 static bool read_pbm_chunk(struct ParseState *state, uint32_t length);
 static bool read_bmhd_chunk(struct ParseState *state, uint32_t length);
@@ -97,7 +98,7 @@ static bool read_lbm(struct ParseState *state)
     int file_size = ftell(state->f);
     fseek(state->f, 0, SEEK_SET);
 
-    bool success = read_form_chunk(state, file_size);
+    bool success = read_root_chunk(state, file_size);
     if (!success) {
         return false;
     }
@@ -111,16 +112,11 @@ static bool read_lbm(struct ParseState *state)
     return true;
 }
 
-static bool read_form_chunk(struct ParseState *state, uint32_t length)
+static bool read_root_chunk(struct ParseState *state, uint32_t length)
 {
     struct ChunkHeader header;
     if (fread(&header, sizeof(struct ChunkHeader), 1, state->f) != 1) {
         fprintf(stderr, "Failed to read chunk header\n");
-        return false;
-    }
-
-    if (strncmp(header.chunk_id, "FORM", 4) != 0) {
-        fprintf(stderr, "FORM chunk not found\n");
         return false;
     }
 
@@ -129,19 +125,28 @@ static bool read_form_chunk(struct ParseState *state, uint32_t length)
     printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
 #endif
 
-    char form_type[4];
-    if (fread(form_type, 1, 4, state->f) != 4) {
+    if (strncmp(header.chunk_id, "FORM", 4) == 0) {
+        return read_form_chunk(state, header.chunk_len);
+    } else {
+        fprintf(stderr, "Unsupported chunk id: '%.4s'\n", header.chunk_id);
+        return false;
+    }
+
+    return true;
+}
+
+static bool read_form_chunk(struct ParseState *state, uint32_t length)
+{
+    char format[4];
+    if (fread(format, 1, 4, state->f) != 4) {
         fprintf(stderr, "Failed to read FORM type\n");
         return false;
     }
 
-    if (strncmp(form_type, "PBM ", 4) == 0) {
-        return read_pbm_chunk(state, header.chunk_len - 4);
-    } else if (strncmp(form_type, "ILBM", 4) == 0) {
-        fprintf(stderr, "Unsupported FORM type: '%.4s'\n", form_type);
-        return false;
+    if (strncmp(format, "PBM ", 4) == 0) {
+        return read_pbm_chunk(state, length - 4);
     } else {
-        fprintf(stderr, "Unsupported FORM type: '%.4s'\n", form_type);
+        fprintf(stderr, "Unsupported format: '%.4s'\n", format);
         return false;
     }
 
@@ -187,7 +192,14 @@ static bool read_pbm_chunk(struct ParseState *state, uint32_t length)
             fprintf(stderr, "Unsupported chunk type: '%.4s' (%d bytes)\n",
                 header.chunk_id, header.chunk_len);
 #endif
+            // Skip unsupported chunk
             fseek(state->f, header.chunk_len, SEEK_CUR);
+        }
+
+        if (header.chunk_len % 2 == 1) {
+            // Skip padding byte
+            fseek(state->f, 1, SEEK_CUR);
+            left--;
         }
 
         left -= sizeof(struct ChunkHeader) + header.chunk_len;
