@@ -39,11 +39,18 @@
 #define CMAP_ENTRY_TO_ARGB(e) \
     0xff000000 | ((e).r << 16) | ((e).g << 8) | ((e).b)
 
-struct ParseState {
+typedef struct {
     FILE *f;
     Scene *scene;
     bool is_rle_compressed;
-};
+} ParseState;
+
+typedef bool (*ChunkParser)(ParseState *state, uint32_t length);
+
+typedef struct {
+    const char *chunk_id;
+    const ChunkParser parser;
+} ChunkParserEntry;
 
 struct ChunkHeader {
     char chunk_id[4];
@@ -80,29 +87,43 @@ struct ColorMapEntry {
     uint8_t b;
 };
 
-static bool read_lbm(struct ParseState *state);
-static bool read_root_chunk(struct ParseState *state, uint32_t length);
-static bool read_form_chunk(struct ParseState *state, uint32_t length);
-static bool read_pbm_chunk(struct ParseState *state, uint32_t length);
-static bool read_bmhd_chunk(struct ParseState *state, uint32_t length);
-static bool read_crng_chunk(struct ParseState *state, uint32_t length);
-static bool read_cmap_chunk(struct ParseState *state, uint32_t length);
-static bool read_body_chunk(struct ParseState *state, uint32_t length);
-static bool read_name_chunk(struct ParseState *state, uint32_t length);
-static bool decompress_rle(struct ParseState *state, uint8_t *dest, uint32_t dest_len);
+static bool read_lbm(ParseState *state);
+static bool read_form_chunk(ParseState *state, uint32_t length);
+static bool read_bmhd_chunk(ParseState *state, uint32_t length);
+static bool read_crng_chunk(ParseState *state, uint32_t length);
+static bool read_cmap_chunk(ParseState *state, uint32_t length);
+static bool read_body_chunk(ParseState *state, uint32_t length);
+static bool read_name_chunk(ParseState *state, uint32_t length);
+static bool read_chunks(ChunkParserEntry *chunk_parsers, ParseState *state, uint32_t length);
+static bool decompress_rle(ParseState *state, uint8_t *dest, uint32_t dest_len);
 
-static bool read_lbm(struct ParseState *state)
+static ChunkParserEntry root_chunk_parsers[] = {
+    { "FORM", read_form_chunk },
+    { NULL, NULL },
+};
+
+static ChunkParserEntry pbm_chunk_parsers[] = {
+    { "BMHD", read_bmhd_chunk },
+    { "CRNG", read_crng_chunk },
+    { "CMAP", read_cmap_chunk },
+    { "BODY", read_body_chunk },
+    { "NAME", read_name_chunk },
+    { NULL, NULL },
+};
+
+static bool read_lbm(ParseState *state)
 {
     // Get file size
     fseek(state->f, 0, SEEK_END);
     int file_size = ftell(state->f);
     fseek(state->f, 0, SEEK_SET);
 
-    bool success = read_root_chunk(state, file_size);
+    bool success = read_chunks(root_chunk_parsers, state, file_size);
     if (!success) {
         return false;
     }
 
+    // Ensure we've read the entire file
     if (ftell(state->f) != file_size) {
         fprintf(stderr, "Still more to read (%ld/%d)\n",
             ftell(state->f), file_size);
@@ -112,30 +133,7 @@ static bool read_lbm(struct ParseState *state)
     return true;
 }
 
-static bool read_root_chunk(struct ParseState *state, uint32_t length)
-{
-    struct ChunkHeader header;
-    if (fread(&header, sizeof(struct ChunkHeader), 1, state->f) != 1) {
-        fprintf(stderr, "Failed to read chunk header\n");
-        return false;
-    }
-
-    header.chunk_len = BE2LE32(header.chunk_len);
-#ifdef LOG_VERBOSE
-    printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
-#endif
-
-    if (strncmp(header.chunk_id, "FORM", 4) == 0) {
-        return read_form_chunk(state, header.chunk_len);
-    } else {
-        fprintf(stderr, "Unsupported chunk id: '%.4s'\n", header.chunk_id);
-        return false;
-    }
-
-    return true;
-}
-
-static bool read_form_chunk(struct ParseState *state, uint32_t length)
+static bool read_form_chunk(ParseState *state, uint32_t length)
 {
     char format[4];
     if (fread(format, 1, 4, state->f) != 4) {
@@ -144,7 +142,7 @@ static bool read_form_chunk(struct ParseState *state, uint32_t length)
     }
 
     if (strncmp(format, "PBM ", 4) == 0) {
-        return read_pbm_chunk(state, length - 4);
+        return read_chunks(pbm_chunk_parsers, state, length - 4);
     } else {
         fprintf(stderr, "Unsupported format: '%.4s'\n", format);
         return false;
@@ -153,62 +151,7 @@ static bool read_form_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool read_pbm_chunk(struct ParseState *state, uint32_t length)
-{
-    struct ChunkHeader header;
-    uint32_t left = length;
-    while (left > 0) {
-        if (fread(&header, sizeof(struct ChunkHeader), 1, state->f) != 1) {
-            fprintf(stderr, "Failed to read chunk header\n");
-            return false;
-        }
-
-        header.chunk_len = BE2LE32(header.chunk_len);
-#ifdef LOG_VERBOSE
-        printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
-#endif
-        if (strncmp(header.chunk_id, "BMHD", 4) == 0) {
-            if (!read_bmhd_chunk(state, header.chunk_len)) {
-                return false;
-            }
-        } else if (strncmp(header.chunk_id, "CRNG", 4) == 0) {
-            if (!read_crng_chunk(state, header.chunk_len)) {
-                return false;
-            }
-        } else if (strncmp(header.chunk_id, "CMAP", 4) == 0) {
-            if (!read_cmap_chunk(state, header.chunk_len)) {
-                return false;
-            }
-        } else if (strncmp(header.chunk_id, "BODY", 4) == 0) {
-            if (!read_body_chunk(state, header.chunk_len)) {
-                return false;
-            }
-        } else if (strncmp(header.chunk_id, "NAME", 4) == 0) {
-            if (!read_name_chunk(state, header.chunk_len)) {
-                return false;
-            }
-        } else {
-#ifdef LOG_VERBOSE
-            fprintf(stderr, "Unsupported chunk type: '%.4s' (%d bytes)\n",
-                header.chunk_id, header.chunk_len);
-#endif
-            // Skip unsupported chunk
-            fseek(state->f, header.chunk_len, SEEK_CUR);
-        }
-
-        if (header.chunk_len % 2 == 1) {
-            // Skip padding byte
-            fseek(state->f, 1, SEEK_CUR);
-            left--;
-        }
-
-        left -= sizeof(struct ChunkHeader) + header.chunk_len;
-    }
-
-    return true;
-}
-
-static bool read_bmhd_chunk(struct ParseState *state, uint32_t length)
+static bool read_bmhd_chunk(ParseState *state, uint32_t length)
 {
     struct BitmapHeader bmhd;
     if (fread(&bmhd, sizeof(struct BitmapHeader), 1, state->f) != 1) {
@@ -229,7 +172,7 @@ static bool read_bmhd_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool read_crng_chunk(struct ParseState *state, uint32_t length)
+static bool read_crng_chunk(ParseState *state, uint32_t length)
 {
     struct ColorRange crng;
     if (fread(&crng, sizeof(struct ColorRange), 1, state->f) != 1) {
@@ -262,7 +205,7 @@ static bool read_crng_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool read_cmap_chunk(struct ParseState *state, uint32_t length)
+static bool read_cmap_chunk(ParseState *state, uint32_t length)
 {
     if (length % 3 != 0) {
         fprintf(stderr, "Invalid CMAP chunk length: %u\n", length);
@@ -297,7 +240,7 @@ static bool read_cmap_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool read_body_chunk(struct ParseState *state, uint32_t length)
+static bool read_body_chunk(ParseState *state, uint32_t length)
 {
     Scene *scene = state->scene;
     scene->n_pixels = scene->width * scene->height;
@@ -330,7 +273,7 @@ static bool read_body_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool read_name_chunk(struct ParseState *state, uint32_t length)
+static bool read_name_chunk(ParseState *state, uint32_t length)
 {
     Scene *scene = state->scene;
     scene->name = malloc(length + 1);
@@ -348,7 +291,53 @@ static bool read_name_chunk(struct ParseState *state, uint32_t length)
     return true;
 }
 
-static bool decompress_rle(struct ParseState *state, uint8_t *dest, uint32_t dest_len)
+static bool read_chunks(ChunkParserEntry *chunk_parsers, ParseState *state, uint32_t length)
+{
+    struct ChunkHeader header;
+    uint32_t left = length;
+    while (left > 0) {
+        if (fread(&header, sizeof(struct ChunkHeader), 1, state->f) != 1) {
+            fprintf(stderr, "Failed to read chunk header\n");
+            return false;
+        }
+
+        header.chunk_len = BE2LE32(header.chunk_len);
+#ifdef LOG_VERBOSE
+        printf("%.4s: %u bytes\n", header.chunk_id, header.chunk_len);
+#endif
+        bool parser_found = false;
+        for (ChunkParserEntry *entry = chunk_parsers; entry->chunk_id; entry++) {
+            if (strncmp(header.chunk_id, entry->chunk_id, 4) == 0) {
+                if (!entry->parser(state, header.chunk_len)) {
+                    return false;
+                }
+                parser_found = true;
+                break;
+            }
+        }
+
+        if (!parser_found) {
+#ifdef LOG_VERBOSE
+            fprintf(stderr, "Unsupported chunk type: '%.4s' (%d bytes)\n",
+                header.chunk_id, header.chunk_len);
+#endif
+            // Skip unsupported chunk
+            fseek(state->f, header.chunk_len, SEEK_CUR);
+        }
+
+        if (header.chunk_len % 2 == 1) {
+            // Skip padding byte
+            fseek(state->f, 1, SEEK_CUR);
+            left--;
+        }
+
+        left -= sizeof(struct ChunkHeader) + header.chunk_len;
+    }
+
+    return true;
+}
+
+static bool decompress_rle(ParseState *state, uint8_t *dest, uint32_t dest_len)
 {
     int decompressed_len = 0;
     while (decompressed_len < dest_len) {
@@ -429,7 +418,7 @@ bool scene_read_lbm(Scene *scene, const char *path)
         return false;
     }
 
-    struct ParseState state = { .scene = scene, .f = f };
+    ParseState state = { .scene = scene, .f = f };
     bool success = read_lbm(&state);
     if (!success) {
         scene_free(scene);
@@ -449,7 +438,7 @@ bool scene_read_lbm_mem(Scene *scene, const void *data, size_t size)
     }
 
     // Create a ParseState and read the LBM data as usual
-    struct ParseState state = { .scene = scene, .f = mem_file };
+    ParseState state = { .scene = scene, .f = mem_file };
     bool success = read_lbm(&state);
     if (!success) {
         scene_free(scene);
