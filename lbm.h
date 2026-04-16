@@ -12,11 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SCENE_H
-#define SCENE_H
+#ifndef LBM_H
+#define LBM_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef union {
+    struct {
+        uint8_t b;
+        uint8_t g;
+        uint8_t r;
+        uint8_t a;
+    } channels;
+    uint32_t argb;
+} Color;
 
 typedef struct {
     uint8_t flags;
@@ -30,18 +42,18 @@ typedef struct {
     uint32_t height;
     uint8_t *pixels;
     uint32_t n_pixels;
-    uint32_t *palette;
+    Color *palette;
     uint16_t n_palette;
     uint16_t s_palette;
     Cycle *cycles;
     uint16_t n_cycles;
     uint16_t s_cycles;
     char *name;
-} Scene;
+} LbmImage;
 
-bool scene_read_lbm_mem(Scene *scene, const void *data, size_t size);
-bool scene_read_lbm(Scene *scene, const char *path);
-void scene_free(Scene *scene);
-void scene_dump(const Scene *scene);
+bool lbm_read_mem(LbmImage *image, const void *data, size_t size);
+bool lbm_read_file(LbmImage *image, const char *path);
+void lbm_free(LbmImage *image);
+void lbm_dump(const LbmImage *image);
 
-#endif // SCENE_H
+#endif // LBM_H
