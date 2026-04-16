@@ -84,6 +84,25 @@ bool iff_decompress_rle(IffParseState *state, uint8_t *dest, uint32_t dest_len)
     return true;
 }
 
+bool iff_read_text_chunk(IffParseState *state, uint32_t chunk_length, char **dest)
+{
+    *dest = malloc(chunk_length + 1);
+    if (*dest == NULL) {
+        fprintf(stderr, "Failed to allocate memory\n");
+        return false;
+    }
+
+    if (fread(*dest, 1, chunk_length, state->f) != chunk_length) {
+        fprintf(stderr, "Failed to read text\n");
+        free(*dest);
+        *dest = NULL;
+        return false;
+    }
+    (*dest)[chunk_length] = '\0';
+
+    return true;
+}
+
 static CallbackStatus form_callback(IffParseState *state, char *chunk_id, uint32_t length)
 {
     if (length < 4) {

@@ -196,14 +196,21 @@ static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
     long pos = ftell(state->base.f);
     if (state->is_rle_compressed) {
         if (!iff_decompress_rle(&state->base, image->pixels, image->n_pixels)) {
+            fprintf(stderr, "Failed to decompress RLE data\n");
+            free(image->pixels);
+            image->pixels = NULL;
             return CALLBACK_ERROR;
         }
     } else if (length != image->n_pixels) {
         fprintf(stderr, "BODY chunk length does not match expected pixel data length\n");
+        free(image->pixels);
+        image->pixels = NULL;
         return CALLBACK_ERROR;
     } else {
         if (fread(image->pixels, 1, length, state->base.f) != length) {
             fprintf(stderr, "Failed to read pixel data\n");
+            free(image->pixels);
+            image->pixels = NULL;
             return CALLBACK_ERROR;
         }
     }
@@ -219,18 +226,10 @@ static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
 static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length)
 {
     LbmImage *image = state->image;
-    image->name = malloc(length + 1);
-    if (image->name == NULL) {
-        fprintf(stderr, "Failed to allocate memory for NAME\n");
+    if (!iff_read_text_chunk(&state->base, length, &image->name)) {
+        fprintf(stderr, "Failed to read NAME chunk\n");
         return CALLBACK_ERROR;
     }
-
-    if (fread(image->name, 1, length, state->base.f) != length) {
-        fprintf(stderr, "Failed to read NAME\n");
-        return CALLBACK_ERROR;
-    }
-    image->name[length] = '\0';
-
     return CALLBACK_SUCCESS;
 }
 
@@ -271,7 +270,7 @@ bool lbm_read_file(LbmImage *image, const char *path)
     }
 
     LbmParseState state = {
-        .base = { .f = f, .callback = chunk_callback, .verbose_logging = true },
+        .base = { .f = f, .callback = chunk_callback },
         .image = image,
     };
     bool success = iff_read_file((IffParseState *) &state);

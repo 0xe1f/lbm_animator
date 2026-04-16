@@ -51,6 +51,7 @@ typedef struct {
 } ChunkHeader;
 
 bool iff_read_file(IffParseState *state);
+bool iff_read_text_chunk(IffParseState *state, uint32_t chunk_length, char **dest);
 bool iff_decompress_rle(IffParseState *state, uint8_t *dest, uint32_t dest_len);
 
 #endif // MINIFF_H
