@@ -21,6 +21,7 @@
 #include <vorbis/vorbisfile.h>
 #include "libretro.h"
 #include "lbm.h"
+#include "8svx.h"
 
 retro_log_printf_t log_cb;
 
@@ -49,6 +50,7 @@ static uint32_t *palette = NULL;
 static bool color_blending_enabled = true;
 static FILE *audio_file = NULL;
 static OggVorbis_File vorbis_file = { 0 };
+static EsvxAudio esvx_audio = { 0 };
 static char sound_buffer[AUDIO_BUFFER_SIZE] = { 0 };
 static char *system_directory = NULL;
 
@@ -195,29 +197,38 @@ bool retro_load_game(const struct retro_game_info *info)
     char audio_path[2048];
     struct retro_game_info_ext *info_ext = NULL;
     if (environ_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &info_ext)) {
+        // Try 8SVX first
+        snprintf(audio_path, sizeof(audio_path), "%s/%s.8svx",
+            system_directory, info_ext->name);
+        if (access(audio_path, F_OK) == 0) {
+            if (!esvx_read_file(&esvx_audio, audio_path)) {
+                log_cb(RETRO_LOG_WARN, "Error reading 8SVX audio file: %s\n", audio_path);
+            } else {
+                log_cb(RETRO_LOG_INFO, "8SVX file loaded: %s\n", audio_path);
+                esvx_resample(&esvx_audio, 2, 2, SOUND_FREQUENCY);
+                log_cb(RETRO_LOG_INFO, "File resampled to %d Hz\n", SOUND_FREQUENCY);
+                goto done_audio;
+            }
+        }
+
+        // Try OGG if 8SVX not found
         snprintf(audio_path, sizeof(audio_path), "%s/%s.ogg",
             system_directory, info_ext->name);
-    }
-
-    // Check to see if file exists; if not, disable audio
-    if (*audio_path && access(audio_path, F_OK) != 0) {
-        log_cb(RETRO_LOG_INFO, "Audio file not found: %s\n", audio_path);
-        *audio_path = '\0';
-    }
-
-    // Init audio
-    if (*audio_path) {
-        audio_file = fopen(audio_path, "rb");
-        if (audio_file == NULL) {
-            log_cb(RETRO_LOG_WARN, "Audio file not found: %s\n", audio_path);
-        } else if (ov_open_callbacks(audio_file, &vorbis_file, NULL, 0, OV_CALLBACKS_NOCLOSE) < 0) {
-            log_cb(RETRO_LOG_WARN, "Error opening audio stream: %s\n", audio_path);
-            fclose(audio_file);
-            audio_file = NULL;
-        } else {
-            log_cb(RETRO_LOG_INFO, "Audio file loaded: %s\n", audio_path);
+        if (access(audio_path, F_OK) == 0) {
+            audio_file = fopen(audio_path, "rb");
+            if (audio_file == NULL) {
+                log_cb(RETRO_LOG_WARN, "Couldn't open OGG file: %s\n", audio_path);
+            } else if (ov_open_callbacks(audio_file, &vorbis_file, NULL, 0, OV_CALLBACKS_NOCLOSE) < 0) {
+                log_cb(RETRO_LOG_WARN, "Error opening OGG stream: %s\n", audio_path);
+                fclose(audio_file);
+                audio_file = NULL;
+            } else {
+                log_cb(RETRO_LOG_INFO, "OGG file loaded: %s\n", audio_path);
+                goto done_audio;
+            }
         }
     }
+    done_audio:
 
     // Init graphics
     unsigned int format = RETRO_PIXEL_FORMAT_XRGB8888;
@@ -330,6 +341,7 @@ static void free_buffers()
     free(palette);
     palette = NULL;
     ov_clear(&vorbis_file);
+    esvx_free(&esvx_audio);
     if (audio_file) {
         fclose(audio_file);
         audio_file = NULL;
@@ -421,6 +433,20 @@ static void check_variables()
 
 static void fill_audio_buffer()
 {
+    if (esvx_audio.samples) {
+        int play = sizeof(sound_buffer);
+        static int p = 0;
+        while (play > 0) {
+            sound_buffer[sizeof(sound_buffer) - play] = esvx_audio.samples[p++];
+            if (p >= esvx_audio.n_samples) {
+                p = 0; // Loop back to start
+            }
+            play--;
+        }
+        audio_cb((const int16_t *) sound_buffer, sizeof(sound_buffer) / 4);
+        return;
+    }
+
     if (audio_file == NULL) {
         return; // No audio
     }

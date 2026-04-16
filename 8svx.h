@@ -20,22 +20,17 @@
 // #include <stdio.h>
 #include <stdlib.h>
 
-typedef enum {
-    CHANNEL_UNKNOWN = 0,
-    CHANNEL_LEFT  = 0x2,
-    CHANNEL_RIGHT = 0x4,
-    CHANNEL_STEREO = (CHANNEL_LEFT | CHANNEL_RIGHT),
-} Channel;
-
 typedef struct {
     int8_t *samples;
     uint32_t n_samples;
     uint16_t sample_rate;
-    Channel channel;
+    uint8_t channels;
+    uint8_t bytes_per_sample;
     char *annotation;
     char *name;
 } EsvxAudio;
 
+bool esvx_resample(EsvxAudio *audio, uint8_t channels, uint8_t bytes_per_sample, uint16_t target_sample_rate);
 bool esvx_read_mem(EsvxAudio *audio, const void *data, size_t size);
 bool esvx_read_file(EsvxAudio *audio, const char *path);
 void esvx_free(EsvxAudio *audio);
