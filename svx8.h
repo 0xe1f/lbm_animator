@@ -27,12 +27,12 @@ typedef struct {
     uint8_t bytes_per_sample;
     char *annotation;
     char *name;
-} EsvxAudio;
+} Svx8Audio;
 
-bool esvx_resample(EsvxAudio *audio, uint8_t channels, uint8_t bytes_per_sample, uint16_t target_sample_rate);
-bool esvx_read_mem(EsvxAudio *audio, const void *data, size_t size);
-bool esvx_read_file(EsvxAudio *audio, const char *path);
-void esvx_free(EsvxAudio *audio);
-void esvx_dump(const EsvxAudio *audio);
+bool svx8_resample(Svx8Audio *audio, uint8_t channels, uint8_t bytes_per_sample, uint16_t target_sample_rate);
+bool svx8_read_mem(Svx8Audio *audio, const void *data, size_t size);
+bool svx8_read_file(Svx8Audio *audio, const char *path);
+void svx8_free(Svx8Audio *audio);
+void svx8_dump(const Svx8Audio *audio);
 
 #endif // EIGHTSVX_H

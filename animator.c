@@ -21,7 +21,7 @@
 #include <vorbis/vorbisfile.h>
 #include "libretro.h"
 #include "lbm.h"
-#include "8svx.h"
+#include "svx8.h"
 
 retro_log_printf_t log_cb;
 
@@ -50,7 +50,7 @@ static uint32_t *palette = NULL;
 static bool color_blending_enabled = true;
 static FILE *audio_file = NULL;
 static OggVorbis_File vorbis_file = { 0 };
-static EsvxAudio esvx_audio = { 0 };
+static Svx8Audio svx8_audio = { 0 };
 static uint32_t sample_pos = 0;
 static char sound_buffer[AUDIO_BUFFER_SIZE] = { 0 };
 static char *system_directory = NULL;
@@ -202,12 +202,17 @@ bool retro_load_game(const struct retro_game_info *info)
         snprintf(audio_path, sizeof(audio_path), "%s/%s.8svx",
             system_directory, info_ext->name);
         if (access(audio_path, F_OK) == 0) {
-            if (!esvx_read_file(&esvx_audio, audio_path)) {
+            if (!svx8_read_file(&svx8_audio, audio_path)) {
                 log_cb(RETRO_LOG_WARN, "Error reading 8SVX audio file: %s\n", audio_path);
             } else {
-                log_cb(RETRO_LOG_INFO, "8SVX file loaded: %s\n", audio_path);
-                esvx_resample(&esvx_audio, 2, 2, SOUND_FREQUENCY);
-                log_cb(RETRO_LOG_INFO, "File resampled to %d Hz\n", SOUND_FREQUENCY);
+                log_cb(RETRO_LOG_INFO, "8SVX file loaded: %s (%d Hz, %d channels, %d bytes per sample)\n",
+                    audio_path, svx8_audio.sample_rate,
+                    svx8_audio.channels, svx8_audio.bytes_per_sample);
+                svx8_resample(&svx8_audio, 2, 2, SOUND_FREQUENCY);
+                log_cb(RETRO_LOG_INFO, "Resampled to %d Hz, %d ch, %d bps (%d KiB)\n",
+                    svx8_audio.sample_rate, svx8_audio.channels,
+                    svx8_audio.bytes_per_sample,
+                    (svx8_audio.n_samples * svx8_audio.bytes_per_sample) / 1024);
                 goto done_audio;
             }
         }
@@ -342,7 +347,7 @@ static void free_buffers()
     free(palette);
     palette = NULL;
     ov_clear(&vorbis_file);
-    esvx_free(&esvx_audio);
+    svx8_free(&svx8_audio);
     if (audio_file) {
         fclose(audio_file);
         audio_file = NULL;
@@ -435,13 +440,13 @@ static void check_variables()
 static void fill_audio_buffer()
 {
     int bytes_left = sizeof(sound_buffer);
-    if (esvx_audio.n_samples) {
-        int bytes_per_frame = esvx_audio.channels * esvx_audio.bytes_per_sample;
+    if (svx8_audio.n_samples) {
+        int bytes_per_frame = svx8_audio.channels * svx8_audio.bytes_per_sample;
         while (bytes_left > 0) {
-            if (sample_pos >= esvx_audio.n_samples) {
+            if (sample_pos >= svx8_audio.n_samples) {
                 sample_pos = 0; // Loop back to start
             }
-            sound_buffer[sizeof(sound_buffer) - bytes_left] = esvx_audio.samples[sample_pos++];
+            sound_buffer[sizeof(sound_buffer) - bytes_left] = svx8_audio.samples[sample_pos++];
             bytes_left--;
         }
         int frames = sizeof(sound_buffer) / bytes_per_frame;

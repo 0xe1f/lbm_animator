@@ -3,7 +3,7 @@
 LBM Animator is a libretro core that displays and animates LBM (Interleaved
 BitMap) image files with support for color-cycling animation and audio.
 
-It's not particularly interactive; its purpose is primarily as a screensaver;
+It's not particularly interactive. Its purpose is primarily as a screensaver;
 I wrote it specifically to display images on an
 [LED matrix display](https://github.com/0xe1f/red).
 
@@ -12,10 +12,9 @@ I wrote it specifically to display images on an
 
 ## Features
 
-- **LBM File Support**: Reads and parses IFF ILBM (Interleaved BitMap) format files
-- **Color Cycling Animation**: Renders CRNG (Color Range) chunks for palette-based animations
+- **LBM File Support**: Reads and parses IFF ILBM (Interleaved BitMap) format 
+- **Audio File Support**: Reads and plays back 8SVX or OGG audio in background
 - **Color Blending**: Smooth color transitions between animation frames
-- **Audio Support**: Plays accompanying Ogg Vorbis audio files (`.ogg`), if present
 
 ### Audio
 

@@ -18,14 +18,14 @@
 #include <string.h>
 
 #include "miniff.h"
-#include "8svx.h"
+#include "svx8.h"
 
 typedef struct {
     IffParseState base;
-    EsvxAudio *audio;
+    Svx8Audio *audio;
     bool form_present;
     uint8_t compression;
-} EsvxParseState;
+} Svx8ParseState;
 
 typedef struct {
     uint32_t one_shot_hi_samples;
@@ -38,23 +38,23 @@ typedef struct {
 } VoiceHeader;
 
 static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
-static CallbackStatus read_vhdr_chunk(EsvxParseState *state, uint32_t length);
-static CallbackStatus read_name_chunk(EsvxParseState *state, uint32_t length);
-static CallbackStatus read_anno_chunk(EsvxParseState *state, uint32_t length);
-static CallbackStatus read_body_chunk(EsvxParseState *state, uint32_t length);
+static CallbackStatus read_vhdr_chunk(Svx8ParseState *state, uint32_t length);
+static CallbackStatus read_name_chunk(Svx8ParseState *state, uint32_t length);
+static CallbackStatus read_anno_chunk(Svx8ParseState *state, uint32_t length);
+static CallbackStatus read_body_chunk(Svx8ParseState *state, uint32_t length);
 
 static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
 {
-    EsvxParseState *esvx_state = (EsvxParseState *) state;
+    Svx8ParseState *svx8_state = (Svx8ParseState *) state;
     if (strcmp(chunk_id, "FORM:8SVX") == 0) {
-        esvx_state->form_present = true;
+        svx8_state->form_present = true;
         return CALLBACK_SUCCESS;
     } else if (strcmp(chunk_id, "VHDR") == 0) {
-        return read_vhdr_chunk(esvx_state, length);
+        return read_vhdr_chunk(svx8_state, length);
     } else if (strcmp(chunk_id, "ANNO") == 0) {
-        return read_anno_chunk(esvx_state, length);
+        return read_anno_chunk(svx8_state, length);
     } else if (strcmp(chunk_id, "BODY") == 0) {
-        return read_body_chunk(esvx_state, length);
+        return read_body_chunk(svx8_state, length);
     } else if (state->verbose_logging) {
         fprintf(stderr, "Unknown chunk type: '%s' (%d bytes)\n",
             chunk_id, length);
@@ -62,7 +62,7 @@ static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint3
     return CALLBACK_UNSUPPORTED;
 }
 
-static CallbackStatus read_vhdr_chunk(EsvxParseState *state, uint32_t length)
+static CallbackStatus read_vhdr_chunk(Svx8ParseState *state, uint32_t length)
 {
     VoiceHeader vhdr;
     if (fread(&vhdr, sizeof(VoiceHeader), 1, state->base.f) != 1) {
@@ -81,7 +81,7 @@ static CallbackStatus read_vhdr_chunk(EsvxParseState *state, uint32_t length)
         fprintf(stderr, "  Volume: %u\n", BE2LE32(vhdr.volume));
     }
 
-    EsvxAudio *audio = state->audio;
+    Svx8Audio *audio = state->audio;
     state->compression = vhdr.s_compression;
     audio->sample_rate = BE2LE16(vhdr.samples_per_sec);
     audio->channels = 1;
@@ -90,9 +90,9 @@ static CallbackStatus read_vhdr_chunk(EsvxParseState *state, uint32_t length)
     return CALLBACK_SUCCESS;
 }
 
-static CallbackStatus read_name_chunk(EsvxParseState *state, uint32_t length)
+static CallbackStatus read_name_chunk(Svx8ParseState *state, uint32_t length)
 {
-    EsvxAudio *audio = state->audio;
+    Svx8Audio *audio = state->audio;
     if (!iff_read_text_chunk(&state->base, length, &audio->name)) {
         fprintf(stderr, "Failed to read NAME chunk\n");
         return CALLBACK_ERROR;
@@ -100,9 +100,9 @@ static CallbackStatus read_name_chunk(EsvxParseState *state, uint32_t length)
     return CALLBACK_SUCCESS;
 }
 
-static CallbackStatus read_anno_chunk(EsvxParseState *state, uint32_t length)
+static CallbackStatus read_anno_chunk(Svx8ParseState *state, uint32_t length)
 {
-    EsvxAudio *audio = state->audio;
+    Svx8Audio *audio = state->audio;
     if (!iff_read_text_chunk(&state->base, length, &audio->annotation)) {
         fprintf(stderr, "Failed to read ANNO chunk\n");
         return CALLBACK_ERROR;
@@ -110,7 +110,7 @@ static CallbackStatus read_anno_chunk(EsvxParseState *state, uint32_t length)
     return CALLBACK_SUCCESS;
 }
 
-static CallbackStatus read_body_chunk(EsvxParseState *state, uint32_t length)
+static CallbackStatus read_body_chunk(Svx8ParseState *state, uint32_t length)
 {
     if (state->compression != 0) {
         fprintf(stderr, "Unsupported compression type: %u\n", state->compression);
@@ -120,7 +120,7 @@ static CallbackStatus read_body_chunk(EsvxParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    EsvxAudio *audio = state->audio;
+    Svx8Audio *audio = state->audio;
     audio->n_samples = length;
     audio->samples = malloc(audio->n_samples);
     if (audio->samples == NULL) {
@@ -138,7 +138,7 @@ static CallbackStatus read_body_chunk(EsvxParseState *state, uint32_t length)
     return CALLBACK_SUCCESS;
 }
 
-bool esvx_resample(EsvxAudio *audio, uint8_t channels, uint8_t bytes_per_sample, uint16_t target_sample_rate)
+bool svx8_resample(Svx8Audio *audio, uint8_t channels, uint8_t bytes_per_sample, uint16_t target_sample_rate)
 {
     if (audio == NULL || audio->samples == NULL) {
         fprintf(stderr, "No audio buffer to resample\n");
@@ -254,7 +254,7 @@ bool esvx_resample(EsvxAudio *audio, uint8_t channels, uint8_t bytes_per_sample,
     return true;
 }
 
-bool esvx_read_mem(EsvxAudio *audio, const void *data, size_t size)
+bool svx8_read_mem(Svx8Audio *audio, const void *data, size_t size)
 {
     // Open an in-memory file stream with data
     FILE *mem_file = fmemopen((void *)data, size, "rb");
@@ -263,7 +263,7 @@ bool esvx_read_mem(EsvxAudio *audio, const void *data, size_t size)
         return false;
     }
 
-    EsvxParseState state = {
+    Svx8ParseState state = {
         .base = { .f = mem_file, .callback = chunk_callback },
         .audio = audio,
     };
@@ -276,13 +276,13 @@ bool esvx_read_mem(EsvxAudio *audio, const void *data, size_t size)
     }
 
     if (!success) {
-        esvx_free(audio);
+        svx8_free(audio);
     }
 
     return success;
 }
 
-bool esvx_read_file(EsvxAudio *audio, const char *path)
+bool svx8_read_file(Svx8Audio *audio, const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
@@ -290,7 +290,7 @@ bool esvx_read_file(EsvxAudio *audio, const char *path)
         return false;
     }
 
-    EsvxParseState state = {
+    Svx8ParseState state = {
         .base = { .f = f, .callback = chunk_callback },
         .audio = audio,
     };
@@ -303,13 +303,13 @@ bool esvx_read_file(EsvxAudio *audio, const char *path)
     }
 
     if (!success) {
-        esvx_free(audio);
+        svx8_free(audio);
     }
 
     return success;
 }
 
-void esvx_free(EsvxAudio *audio)
+void svx8_free(Svx8Audio *audio)
 {
     free(audio->name);
     free(audio->annotation);
@@ -322,7 +322,7 @@ void esvx_free(EsvxAudio *audio)
     audio->sample_rate = 0;
 }
 
-void esvx_dump(const EsvxAudio *audio)
+void svx8_dump(const Svx8Audio *audio)
 {
     printf("Name: %s\n", audio->name);
     printf("Annotation: %s\n", audio->annotation);
