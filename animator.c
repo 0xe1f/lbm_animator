@@ -187,7 +187,8 @@ bool retro_load_game(const struct retro_game_info *info)
         return false;
     }
 
-    log_cb(RETRO_LOG_INFO, "Image loaded successfully\n");
+    log_cb(RETRO_LOG_INFO, "Image '%s' loaded successfully (%dx%d, %d colors, %d cycles)\n",
+        image.name, image.width, image.height, image.n_palette, image.n_cycles);
     if (buffer != info->data) {
         free(buffer);
     }
@@ -383,7 +384,7 @@ static void cycle_palette()
     unsigned long current_time = micros();
     for (size_t i = 0; i < image.n_cycles; i++) {
         Cycle *cycle = &image.cycles[i];
-        if (cycle->rate == 0) {
+        if (cycle->rate == 0 || (cycle->flags & 0x01) == 0) {
             continue; // No cycling
         }
 
