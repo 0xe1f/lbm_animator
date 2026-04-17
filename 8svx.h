@@ -15,9 +15,8 @@
 #ifndef EIGHTSVX_H
 #define EIGHTSVX_H
 
-// #include <stdbool.h>
-// #include <stdint.h>
-// #include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 typedef struct {

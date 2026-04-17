@@ -14,6 +14,7 @@
 
 // Based on https://moddingwiki.shikadi.net/wiki/LBM_Format
 
+#include <stdio.h>
 #include <string.h>
 
 #include "miniff.h"

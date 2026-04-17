@@ -14,6 +14,7 @@
 
 // Based on https://wiki.amigaos.net/wiki/8SVX_IFF_8-Bit_Sampled_Voice
 
+#include <stdio.h>
 #include <string.h>
 
 #include "miniff.h"

@@ -51,6 +51,7 @@ static bool color_blending_enabled = true;
 static FILE *audio_file = NULL;
 static OggVorbis_File vorbis_file = { 0 };
 static EsvxAudio esvx_audio = { 0 };
+static uint32_t sample_pos = 0;
 static char sound_buffer[AUDIO_BUFFER_SIZE] = { 0 };
 static char *system_directory = NULL;
 
@@ -157,8 +158,7 @@ bool retro_load_game(const struct retro_game_info *info)
     void *buffer = (void *) info->data;
     int buffer_size = info->size;
 
-    log_cb(RETRO_LOG_INFO, "Loading: %s (size: %d, buffer: %p)\n",
-        info->path, buffer_size, buffer);
+    log_cb(RETRO_LOG_INFO, "Loading: %s (size: %d)\n", info->path, buffer_size);
 
     if ((buffer == NULL || buffer_size == 0) && info->path) {
         // Read the file
@@ -196,6 +196,7 @@ bool retro_load_game(const struct retro_game_info *info)
 
     char audio_path[2048];
     struct retro_game_info_ext *info_ext = NULL;
+    sample_pos = 0;
     if (environ_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &info_ext)) {
         // Try 8SVX first
         snprintf(audio_path, sizeof(audio_path), "%s/%s.8svx",
@@ -211,7 +212,7 @@ bool retro_load_game(const struct retro_game_info *info)
             }
         }
 
-        // Try OGG if 8SVX not found
+        // Try OGG next
         snprintf(audio_path, sizeof(audio_path), "%s/%s.ogg",
             system_directory, info_ext->name);
         if (access(audio_path, F_OK) == 0) {
@@ -433,39 +434,35 @@ static void check_variables()
 
 static void fill_audio_buffer()
 {
-    if (esvx_audio.samples) {
-        int play = sizeof(sound_buffer);
-        static int p = 0;
-        while (play > 0) {
-            sound_buffer[sizeof(sound_buffer) - play] = esvx_audio.samples[p++];
-            if (p >= esvx_audio.n_samples) {
-                p = 0; // Loop back to start
+    int bytes_left = sizeof(sound_buffer);
+    if (esvx_audio.n_samples) {
+        int bytes_per_frame = esvx_audio.channels * esvx_audio.bytes_per_sample;
+        while (bytes_left > 0) {
+            if (sample_pos >= esvx_audio.n_samples) {
+                sample_pos = 0; // Loop back to start
             }
-            play--;
+            sound_buffer[sizeof(sound_buffer) - bytes_left] = esvx_audio.samples[sample_pos++];
+            bytes_left--;
         }
-        audio_cb((const int16_t *) sound_buffer, sizeof(sound_buffer) / 4);
-        return;
-    }
-
-    if (audio_file == NULL) {
-        return; // No audio
-    }
-
-    // Read enough to fill the audio buffer
-    static int current_section = 0;
-    int play = sizeof(sound_buffer);
-    while (play > 0) {
-        long ret = ov_read(&vorbis_file, sound_buffer, sizeof(sound_buffer), 0, 2, 1, &current_section);
-        if (ret == 0) {
-            // End of stream, loop back to start
-            ov_pcm_seek(&vorbis_file, 0);
-        } else if (ret < 0) {
-            // Error in audio stream; ignore
-        } else {
-            // Convert bytes read to frames and send to audio callback
-            unsigned int frames = ret / 4; // Assuming 16-bit stereo audio
-            audio_cb((const int16_t *) sound_buffer, frames); // Assuming 16-bit stereo audio
+        int frames = sizeof(sound_buffer) / bytes_per_frame;
+        audio_cb((const int16_t *) sound_buffer, frames);
+    } else if (audio_file != NULL) {
+        int bytes_per_frame = vorbis_file.vi->channels * 2;
+        while (bytes_left > 0) {
+            long bytes_read = ov_read(&vorbis_file,
+                sound_buffer, sizeof(sound_buffer),
+                0, 2, 1, NULL);
+            if (bytes_read == 0) {
+                // End of stream, loop back to start
+                ov_pcm_seek(&vorbis_file, 0);
+            } else if (bytes_read < 0) {
+                // Error in audio stream; ignore
+            } else {
+                // Convert bytes read to frames and send to audio callback
+                unsigned int frames = bytes_read / bytes_per_frame;
+                audio_cb((const int16_t *) sound_buffer, frames);
+            }
+            bytes_left -= bytes_read;
         }
-        play -= ret;
     }
 }
