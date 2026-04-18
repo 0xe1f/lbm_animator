@@ -103,6 +103,22 @@ static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
+    if (state->base.verbose_logging) {
+        printf("Bitmap header:\n");
+        printf("  Width: %u\n", BE2LE16(bmhd.width));
+        printf("  Height: %u\n", BE2LE16(bmhd.height));
+        printf("  X origin: %d\n", BE2LE16(bmhd.x_origin));
+        printf("  Y origin: %d\n", BE2LE16(bmhd.y_origin));
+        printf("  Number of planes: %u\n", bmhd.num_planes);
+        printf("  Masking method: %u\n", bmhd.mask);
+        printf("  Compression method: %u\n", bmhd.compression);
+        printf("  Transparent color: %u\n", BE2LE16(bmhd.trans_clr));
+        printf("  X aspect ratio: %u\n", bmhd.x_aspect);
+        printf("  Y aspect ratio: %u\n", bmhd.y_aspect);
+        printf("  Page width: %d\n", BE2LE16(bmhd.page_width));
+        printf("  Page height: %d\n", BE2LE16(bmhd.page_height));
+    }
+
     if (bmhd.num_planes != 8) {
         fprintf(stderr, "Unsupported number of planes: %u\n", bmhd.num_planes);
         return CALLBACK_ERROR;
