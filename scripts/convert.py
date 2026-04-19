@@ -62,6 +62,7 @@ def pad_chunk(output_file, size):
 
 def write_list(output_file, data, list_type='PBM '):
     format = list_type.encode()
+    palettes = data['palettes']
 
     # Write LIST header and format
     header_size = write_chunk_header(output_file, 'LIST', 0xffff_ffff)
@@ -70,11 +71,20 @@ def write_list(output_file, data, list_type='PBM '):
 
     # Write PROP node
     prop = data['base']
+
+    # Build timeline data
+    timeline = data['timeline']
+    overlay_keys = list(palettes.keys())
+    timelines = []
+    for offset, key in timeline.items():
+        if (index := overlay_keys.index(key)) != -1:
+            timelines.append((int(offset), index))
+
     pad_chunk(output_file,
-        write_form(output_file, prop, type='PROP', form_type=list_type))
+        write_form(output_file, prop, type='PROP', form_type=list_type, timelines=timelines))
 
     # Write subchunks
-    for _, bbm in data['palettes'].items():
+    for _, bbm in palettes.items():
         pad_chunk(output_file,
             write_form(output_file, bbm, form_type=list_type))
 
@@ -92,7 +102,7 @@ def write_list(output_file, data, list_type='PBM '):
     return size + header_size
 
 
-def write_form(output_file, data, type='FORM', form_type='PBM '):
+def write_form(output_file, data, type='FORM', form_type='PBM ', timelines=None):
     colors = data['colors']
     cycles = data['cycles']
     pixels = bytes(data['pixels'])
@@ -113,6 +123,8 @@ def write_form(output_file, data, type='FORM', form_type='PBM '):
     pad_chunk(output_file, write_body(output_file, compressed_pixels))
     if name:
         pad_chunk(output_file, write_text_chunk(output_file, name))
+    if timelines:
+        pad_chunk(output_file, write_tmln(output_file, timelines))
 
     end_pos = output_file.tell()
     size = end_pos - pos
@@ -203,6 +215,17 @@ def write_lbm(output_file, data):
         write_list(output_file, data)
     else:
         raise ValueError("Expected 'base' key in data for LBM conversion")
+
+
+def write_tmln(output_file, timelines):
+    size = len(timelines) * (4 + 1)
+    write_chunk_header(output_file, 'TMLN', size)
+
+    for (offset, index) in timelines:
+        output_file.write(struct.pack('>I', offset))
+        output_file.write(struct.pack('>B', index))
+
+    return size
 
 
 def rle_compress(byte_data):

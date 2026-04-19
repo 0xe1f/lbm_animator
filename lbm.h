@@ -36,6 +36,11 @@ typedef struct {
     uint16_t high;
 } Cycle;
 
+typedef struct {
+    uint32_t offset_secs;
+    uint8_t index;
+} __attribute__((packed)) TimelineEntry;
+
 struct LbmImage;
 
 struct LbmImage {
@@ -53,6 +58,8 @@ struct LbmImage {
     struct LbmImage *bbms;
     uint16_t n_bbms;
     uint16_t s_bbms;
+    TimelineEntry *timelines;
+    uint16_t n_timelines;
 };
 
 typedef struct LbmImage LbmImage;

@@ -73,6 +73,7 @@ static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length);
+static CallbackStatus read_tmln_chunk(LbmParseState *state, uint32_t length);
 static void lbm_dump_indented(const LbmImage *image, char *indent);
 
 static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
@@ -118,6 +119,8 @@ static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint3
         return read_cmap_chunk(lbm_state, length);
     } else if (strcmp(chunk_id, "BODY") == 0) {
         return read_body_chunk(lbm_state, length);
+    } else if (strcmp(chunk_id, "TMLN") == 0) {
+        return read_tmln_chunk(lbm_state, length);
     } else if (state->verbose_logging) {
         fprintf(stderr, "Unknown chunk type: '%s' (%d bytes)\n",
             chunk_id, length);
@@ -300,6 +303,37 @@ static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length)
     return CALLBACK_SUCCESS;
 }
 
+static CallbackStatus read_tmln_chunk(LbmParseState *state, uint32_t length)
+{
+    size_t struct_size = sizeof(TimelineEntry);
+    if (length % struct_size != 0) {
+        fprintf(stderr, "Invalid TMLN chunk length: %u\n", length);
+        return CALLBACK_ERROR;
+    }
+
+    LbmImage *image = state->current;
+    image->timelines = malloc(length);
+    if (image->timelines == NULL) {
+        fprintf(stderr, "Failed to allocate memory for timelines\n");
+        return CALLBACK_ERROR;
+    }
+
+    image->n_timelines = length / struct_size;
+    for (uint16_t i = 0; i < image->n_timelines; i++) {
+        if (fread(&image->timelines[i], struct_size, 1, state->base.f) != 1) {
+            fprintf(stderr, "Failed to read timeline entry\n");
+            return CALLBACK_ERROR;
+        }
+        image->timelines[i].offset_secs = BE2LE32(image->timelines[i].offset_secs);
+    }
+
+    if (state->base.verbose_logging) {
+        printf("Read %u timeline entries\n", image->n_timelines);
+    }
+
+    return CALLBACK_SUCCESS;
+}
+
 static void lbm_dump_indented(const LbmImage *image, char *indent)
 {
     printf("%sDimensions: %ux%u\n", indent, image->width, image->height);
@@ -389,6 +423,7 @@ void lbm_free(LbmImage *image)
     free(image->cycles);
     free(image->name);
     free(image->bbms);
+    free(image->timelines);
 
     image->pixels = NULL;
     image->n_pixels = 0;
@@ -402,6 +437,8 @@ void lbm_free(LbmImage *image)
     image->bbms = NULL;
     image->n_bbms = 0;
     image->s_bbms = 0;
+    image->timelines = NULL;
+    image->n_timelines = 0;
 }
 
 void lbm_dump(const LbmImage *image)
