@@ -22,7 +22,6 @@ import struct
 import re
 import sys
 
-
 log_verbose = False
 
 
@@ -38,46 +37,66 @@ def jsonify(content):
     return re.sub(r"'([^,}\]]+)'", r'"\1"', quote_keys)
 
 
-def size_chunk_header():
-    return 4 + 4 # 4 bytes for header, 4 for length
-
-
-def write_chunk_header(output_file, name, size):
+def write_chunk_header(output_file, name, chunk_size):
+    header_size = 8
     if log_verbose:
-        print(f"Writing {name} ({size} bytes)")
+        if chunk_size == 0xffff_ffff:
+            print(f"Writing {name} (???? bytes)")
+        else:
+            print(f"Writing {name} ({chunk_size} bytes)")
 
     output_file.write(name.encode())
-    output_file.write(struct.pack('>I', size))
+    output_file.write(struct.pack('>I', chunk_size))
+
+    return header_size
 
 
-def write_form(output_file, data):
+def pad_chunk(output_file, size):
+    if size % 2 == 1:
+        output_file.write(b'\x00')
+        size += 1
+
+    return size
+
+
+def write_form(output_file, data, type='FORM', form_type='PBM '):
     colors = data['colors']
     cycles = data['cycles']
     pixels = bytes(data['pixels'])
+    name = data.get('filename', '')
     compressed_pixels = rle_compress(pixels)
-    format_type = b'PBM '
+    format = form_type.encode()
 
-    form_size = len(format_type) + \
-        size_chunk_header() + size_bmhd(data) + \
-        size_chunk_header() + size_cmap(colors) + \
-        sum([size_chunk_header() + size_crng(cycle) for cycle in cycles]) + \
-        size_chunk_header() + size_body(compressed_pixels)
+    # Write FORM header and format
+    header_size = write_chunk_header(output_file, type, 0xffff_ffff)
+    pos = output_file.tell()
+    pad_chunk(output_file, output_file.write(format))
 
-    write_chunk_header(output_file, 'FORM', form_size)
-    output_file.write(format_type)
-    write_bmhd(output_file, data)
-    write_cmap(output_file, colors)
+    # Write chunks and build total size
+    pad_chunk(output_file, write_bmhd(output_file, data))
+    pad_chunk(output_file, write_cmap(output_file, colors))
     for cycle in cycles:
-        write_crng(output_file, cycle)
-    write_body(output_file, compressed_pixels)
+        pad_chunk(output_file, write_crng(output_file, cycle))
+    pad_chunk(output_file, write_body(output_file, compressed_pixels))
+    if name:
+        pad_chunk(output_file, write_text_chunk(output_file, name))
 
+    end_pos = output_file.tell()
+    size = end_pos - pos
 
-def size_bmhd(_):
-    return 20
+    output_file.seek(pos - 4) # Seek to size field in FORM header
+    output_file.write(struct.pack('>I', size)) # Write total size
+    if log_verbose:
+        print(f"Updated {type} size to {size} bytes")
+
+    output_file.seek(end_pos) # Seek back to end of file
+
+    return size + header_size
 
 
 def write_bmhd(output_file, data):
-    write_chunk_header(output_file, 'BMHD', size_bmhd(data))
+    chunk_size = 20
+    write_chunk_header(output_file, 'BMHD', chunk_size)
 
     output_file.write(struct.pack('>H', data['width']))  # width
     output_file.write(struct.pack('>H', data['height'])) # height
@@ -93,25 +112,24 @@ def write_bmhd(output_file, data):
     output_file.write(struct.pack('>h', data['width']))  # page_width
     output_file.write(struct.pack('>h', data['height'])) # page_height
 
-
-def size_cmap(colors):
-    return len(colors) * 3
+    return chunk_size
 
 
 def write_cmap(output_file, colors):
-    write_chunk_header(output_file, 'CMAP', size_cmap(colors))
+    size = len(colors) * 3
+    write_chunk_header(output_file, 'CMAP', size)
+
     for color in colors:
         output_file.write(struct.pack('>B', color[0])) # r
         output_file.write(struct.pack('>B', color[1])) # g
         output_file.write(struct.pack('>B', color[2])) # b
 
-
-def size_crng(_):
-    return 8
+    return size
 
 
 def write_crng(output_file, data):
-    write_chunk_header(output_file, 'CRNG', size_crng(data))
+    size = 8
+    write_chunk_header(output_file, 'CRNG', size)
 
     flags = 0
     if data['reverse'] == 2:
@@ -125,15 +143,25 @@ def write_crng(output_file, data):
     output_file.write(struct.pack('>B', data['low']))  # low
     output_file.write(struct.pack('>B', data['high'])) # high
 
-
-def size_body(byte_data):
-    return len(byte_data)
+    return size
 
 
 def write_body(output_file, byte_data):
-    write_chunk_header(output_file, 'BODY', size_body(byte_data))
+    size = len(byte_data)
+    write_chunk_header(output_file, 'BODY', size)
 
     output_file.write(byte_data)
+
+    return size
+
+
+def write_text_chunk(output_file, text, chunk_name='NAME'):
+    size = len(text)
+    write_chunk_header(output_file, chunk_name, size)
+
+    output_file.write(text.encode())
+
+    return size
 
 
 def write_lbm(output_file, data):
@@ -193,12 +221,15 @@ def main():
     if output_file is None:
         output_file = args.js_file.rsplit('.', 1)[0] + '.lbm'
 
+    # Read and parse the input file
     with open(args.js_file, 'r') as f:
         content = f.read()
 
+    # Convert to JSON and parse
     content = jsonify(content)
     data = json.loads(content)
 
+    # Write the output file
     print(f"Writing to {output_file}...", file=sys.stderr)
     with open(output_file, 'wb') as f:
         write_lbm(f, data['base'])
@@ -206,5 +237,7 @@ def main():
     print("Done!", file=sys.stderr)
 
 
+# Next:
+#   - write LIST
 if __name__ == "__main__":
     main()
