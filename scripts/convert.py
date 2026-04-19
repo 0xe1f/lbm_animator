@@ -15,6 +15,7 @@
 # limitations under the License.
 
 # Converts CanvasCycle-formatted JS files to LBM/IFF format
+# Partly based on https://fabiensanglard.net/reverse_engineering_strike_commander/docs/A%20Quick%20Introduction%20to%20IFF.txt
 
 import json
 import argparse
@@ -59,6 +60,38 @@ def pad_chunk(output_file, size):
     return size
 
 
+def write_list(output_file, data, list_type='PBM '):
+    format = list_type.encode()
+
+    # Write LIST header and format
+    header_size = write_chunk_header(output_file, 'LIST', 0xffff_ffff)
+    pos = output_file.tell()
+    output_file.write(format)
+
+    # Write PROP node
+    prop = data['base']
+    pad_chunk(output_file,
+        write_form(output_file, prop, type='PROP', form_type=list_type))
+
+    # Write subchunks
+    for _, bbm in data['palettes'].items():
+        pad_chunk(output_file,
+            write_form(output_file, bbm, form_type=list_type))
+
+    end_pos = output_file.tell()
+    size = end_pos - pos
+
+    # Update size in LIST header
+    output_file.seek(pos - 4) # Seek to size field in FORM header
+    output_file.write(struct.pack('>I', size)) # Write total size
+    if log_verbose:
+        print(f"Updated LIST size to {size} bytes")
+
+    output_file.seek(end_pos) # Seek back to end of file
+
+    return size + header_size
+
+
 def write_form(output_file, data, type='FORM', form_type='PBM '):
     colors = data['colors']
     cycles = data['cycles']
@@ -70,7 +103,7 @@ def write_form(output_file, data, type='FORM', form_type='PBM '):
     # Write FORM header and format
     header_size = write_chunk_header(output_file, type, 0xffff_ffff)
     pos = output_file.tell()
-    pad_chunk(output_file, output_file.write(format))
+    output_file.write(format)
 
     # Write chunks and build total size
     pad_chunk(output_file, write_bmhd(output_file, data))
@@ -84,6 +117,7 @@ def write_form(output_file, data, type='FORM', form_type='PBM '):
     end_pos = output_file.tell()
     size = end_pos - pos
 
+    # Update size in FORM header
     output_file.seek(pos - 4) # Seek to size field in FORM header
     output_file.write(struct.pack('>I', size)) # Write total size
     if log_verbose:
@@ -165,7 +199,10 @@ def write_text_chunk(output_file, text, chunk_name='NAME'):
 
 
 def write_lbm(output_file, data):
-    write_form(output_file, data)
+    if 'base' in data:
+        write_list(output_file, data)
+    else:
+        raise ValueError("Expected 'base' key in data for LBM conversion")
 
 
 def rle_compress(byte_data):
@@ -232,12 +269,10 @@ def main():
     # Write the output file
     print(f"Writing to {output_file}...", file=sys.stderr)
     with open(output_file, 'wb') as f:
-        write_lbm(f, data['base'])
+        write_lbm(f, data)
 
     print("Done!", file=sys.stderr)
 
 
-# Next:
-#   - write LIST
 if __name__ == "__main__":
     main()
