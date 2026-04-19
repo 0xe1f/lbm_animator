@@ -24,6 +24,8 @@
 #define CYCLE_CAP_INCREMENT   16
 #define PALETTE_CAP_INITIAL   64
 #define PALETTE_CAP_INCREMENT 64
+#define BBM_CAP_INITIAL   64
+#define BBM_CAP_INCREMENT 64
 
 #define CMAP_ENTRY_TO_COLOR(x) \
     (Color) { .channels = { .a = 0xff, .r = (x).r, .g = (x).g, .b = (x).b } }
@@ -31,8 +33,8 @@
 typedef struct {
     IffParseState base;
     LbmImage *image;
-    bool form_present;
     bool is_rle_compressed;
+    LbmImage *current;
 } LbmParseState;
 
 typedef struct {
@@ -71,12 +73,40 @@ static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length);
+static void lbm_dump_indented(const LbmImage *image, char *indent);
 
 static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
 {
     LbmParseState *lbm_state = (LbmParseState *) state;
     if (strcmp(chunk_id, "FORM:PBM ") == 0) {
-        lbm_state->form_present = true;
+        if (lbm_state->current == NULL) {
+            // Top-level FORM chunk
+            lbm_state->current = lbm_state->image;
+        } else {
+            // Nested FORM chunk (e.g. for BBM)
+            // FIXME: this is incorrect, since it is not recursive
+            LbmImage *parent = lbm_state->image;
+            if (parent->n_bbms >= parent->s_bbms) {
+                uint16_t new_size = parent->s_bbms == 0
+                    ? BBM_CAP_INITIAL
+                    : parent->s_bbms + BBM_CAP_INCREMENT;
+                LbmImage *new_bbms = realloc(parent->bbms, new_size * sizeof(LbmImage));
+                if (new_bbms == NULL) {
+                    fprintf(stderr, "Failed to allocate memory for BBMs\n");
+                    return CALLBACK_ERROR;
+                }
+                parent->bbms = new_bbms;
+                parent->s_bbms = new_size;
+            }
+            LbmImage *new_image = &parent->bbms[parent->n_bbms++];
+            memset(new_image, 0, sizeof(LbmImage));
+            lbm_state->current = new_image;
+        }
+        return CALLBACK_SUCCESS;
+    } else if (strcmp(chunk_id, "PROP:PBM ") == 0) {
+        lbm_state->current = lbm_state->image;
+        return CALLBACK_SUCCESS;
+    } else if (strcmp(chunk_id, "LIST:PBM ") == 0) {
         return CALLBACK_SUCCESS;
     } else if (strcmp(chunk_id, "BMHD") == 0) {
         return read_bmhd_chunk(lbm_state, length);
@@ -124,10 +154,14 @@ static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    LbmParseState *lbm_state = (LbmParseState *) state;
-    lbm_state->image->width = BE2LE16(bmhd.width);
-    lbm_state->image->height = BE2LE16(bmhd.height);
-    lbm_state->is_rle_compressed = (bmhd.compression == 1);
+    LbmImage *image = state->current;
+    if (image == NULL) {
+        fprintf(stderr, "BMHD chunk found before image context is set\n");
+        return CALLBACK_ERROR;
+    }
+    image->width = BE2LE16(bmhd.width);
+    image->height = BE2LE16(bmhd.height);
+    state->is_rle_compressed = (bmhd.compression == 1);
 
     return CALLBACK_SUCCESS;
 }
@@ -140,7 +174,11 @@ static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    LbmImage *image = state->image;
+    LbmImage *image = state->current;
+    if (image == NULL) {
+        fprintf(stderr, "CRNG chunk found before image context is set\n");
+        return CALLBACK_ERROR;
+    }
     if (image->n_cycles >= image->s_cycles) {
         uint16_t new_size = image->s_cycles == 0
             ? CYCLE_CAP_INITIAL
@@ -180,7 +218,11 @@ static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length)
             return CALLBACK_ERROR;
         }
 
-        LbmImage *image = state->image;
+        LbmImage *image = state->current;
+        if (image == NULL) {
+            fprintf(stderr, "CMAP chunk found before image context is set\n");
+            return CALLBACK_ERROR;
+        }
         if (image->n_palette + n_entries > image->s_palette) {
             uint16_t new_size = image->s_palette == 0
                 ? PALETTE_CAP_INITIAL
@@ -202,7 +244,11 @@ static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
 {
-    LbmImage *image = state->image;
+    LbmImage *image = state->current;
+    if (image == NULL) {
+        fprintf(stderr, "BODY chunk found before image context is set\n");
+        return CALLBACK_ERROR;
+    }
     image->n_pixels = image->width * image->height;
     image->pixels = malloc(image->n_pixels);
     if (image->pixels == NULL) {
@@ -242,12 +288,41 @@ static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length)
 {
-    LbmImage *image = state->image;
+    LbmImage *image = state->current;
+    if (image == NULL) {
+        fprintf(stderr, "NAME chunk found before image context is set\n");
+        return CALLBACK_ERROR;
+    }
     if (!iff_read_text_chunk(&state->base, length, &image->name)) {
         fprintf(stderr, "Failed to read NAME chunk\n");
         return CALLBACK_ERROR;
     }
     return CALLBACK_SUCCESS;
+}
+
+static void lbm_dump_indented(const LbmImage *image, char *indent)
+{
+    printf("%sDimensions: %ux%u\n", indent, image->width, image->height);
+    printf("%sName: %s\n", indent, image->name);
+    printf("%sPalette (%u colors)\n", indent, image->n_palette);
+    // for (uint16_t i = 0; i < image->n_palette; i++) {
+    //     printf("%s  %d: 0x%08x\n", indent, i, image->palette[i].argb);
+    // }
+    printf("%sCycles (%u)\n", indent, image->n_cycles);
+    for (uint16_t i = 0; i < image->n_cycles; i++) {
+        Cycle *c = &image->cycles[i];
+        printf("%s  %u: flags=0x%02x, rate=%u, low=%u, high=%u\n",
+            indent, i, c->flags, c->rate, c->low, c->high);
+    }
+
+    printf("%sBBMs (%u)\n", indent, image->n_bbms);
+    char next_indent[256];
+    snprintf(next_indent, sizeof(next_indent), "%s  ", indent);
+
+    for (uint16_t i = 0; i < image->n_bbms; i++) {
+        printf("%s%u:\n", indent, i);
+        lbm_dump_indented(&image->bbms[i], next_indent);
+    }
 }
 
 bool lbm_read_mem(LbmImage *image, const void *data, size_t size)
@@ -262,11 +337,12 @@ bool lbm_read_mem(LbmImage *image, const void *data, size_t size)
     LbmParseState state = {
         .base = { .f = mem_file, .callback = chunk_callback },
         .image = image,
+        .current = NULL,
     };
     bool success = iff_read_file((IffParseState *) &state);
     fclose(mem_file);
 
-    if (!state.form_present) {
+    if (state.current == NULL) {
         fprintf(stderr, "Error: FORM chunk not found\n");
         success = false;
     }
@@ -289,11 +365,12 @@ bool lbm_read_file(LbmImage *image, const char *path)
     LbmParseState state = {
         .base = { .f = f, .callback = chunk_callback },
         .image = image,
+        .current = NULL,
     };
     bool success = iff_read_file((IffParseState *) &state);
     fclose(f);
 
-    if (!state.form_present) {
+    if (state.current == NULL) {
         fprintf(stderr, "Error: FORM chunk not found\n");
         success = false;
     }
@@ -311,6 +388,7 @@ void lbm_free(LbmImage *image)
     free(image->palette);
     free(image->cycles);
     free(image->name);
+    free(image->bbms);
 
     image->pixels = NULL;
     image->n_pixels = 0;
@@ -321,18 +399,12 @@ void lbm_free(LbmImage *image)
     image->n_cycles = 0;
     image->s_cycles = 0;
     image->name = NULL;
+    image->bbms = NULL;
+    image->n_bbms = 0;
+    image->s_bbms = 0;
 }
 
 void lbm_dump(const LbmImage *image)
 {
-    printf("Dimensions: %ux%u\n", image->width, image->height);
-    printf("Name: %s\n", image->name);
-    for (uint16_t i = 0; i < image->n_palette; i++) {
-        printf("Color %d: 0x%08x\n", i, image->palette[i].argb);
-    }
-    for (uint16_t i = 0; i < image->n_cycles; i++) {
-        Cycle *c = &image->cycles[i];
-        printf("Cycle %u: flags=0x%02x, rate=%u, low=%u, high=%u\n",
-            i, c->flags, c->rate, c->low, c->high);
-    }
+    lbm_dump_indented(image, "");
 }

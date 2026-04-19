@@ -21,6 +21,7 @@
 #include "miniff.h"
 
 static CallbackStatus form_callback(IffParseState *state, char *chunk_id, uint32_t length);
+static CallbackStatus list_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_chunks(IffParseState *state, const char *parent_chunk_id, uint32_t length);
 
 bool iff_read_file(IffParseState *state)
@@ -106,37 +107,75 @@ bool iff_read_text_chunk(IffParseState *state, uint32_t chunk_length, char **des
 static CallbackStatus form_callback(IffParseState *state, char *chunk_id, uint32_t length)
 {
     if (length < 4) {
-        fprintf(stderr, "FORM chunk too short to contain type\n");
+        fprintf(stderr, "%.4s chunk too short to contain type\n", chunk_id);
         return CALLBACK_ERROR;
     }
 
     char format_id[4];
     if (fread(format_id, 1, 4, state->f) != 4) {
-        fprintf(stderr, "Failed to read FORM type\n");
+        fprintf(stderr, "Failed to read %.4s type\n", chunk_id);
         return CALLBACK_ERROR;
     }
 
     length -= 4; // Account for format_id bytes
 
     char tag[10];
-    snprintf(tag, sizeof(tag), "FORM:%.4s", format_id);
+    snprintf(tag, sizeof(tag), "%.4s:%.4s", chunk_id, format_id);
     if (state->callback) {
         CallbackStatus status = state->callback(state, tag, length);
         if (status == CALLBACK_ERROR) {
-            fprintf(stderr, "Failed to parse FORM chunk with type '%.4s'\n", format_id);
+            fprintf(stderr, "Failed to parse %s\n", tag);
             return CALLBACK_ERROR;
         } else if (status == CALLBACK_UNSUPPORTED) {
             if (state->verbose_logging) {
-                fprintf(stderr, "Unsupported FORM type: '%.4s' (%d bytes)\n",
-                    format_id, length);
+                fprintf(stderr, "Unsupported: %s (%d bytes)\n", tag, length);
             }
 
-            // Skip unsupported FORM chunk
+            // Skip unsupported chunk
             fseek(state->f, length, SEEK_CUR);
             return CALLBACK_SUCCESS;
         }
     } else {
-        fprintf(stderr, "No callback provided to handle chunk FORM\n");
+        fprintf(stderr, "No callback provided to handle %s\n", tag);
+        return CALLBACK_ERROR;
+    }
+
+    return read_chunks(state, format_id, length);
+}
+
+static CallbackStatus list_callback(IffParseState *state, char *chunk_id, uint32_t length)
+{
+    if (length < 4) {
+        fprintf(stderr, "%.4s chunk too short to contain type\n", chunk_id);
+        return CALLBACK_ERROR;
+    }
+
+    char format_id[4];
+    if (fread(format_id, 1, 4, state->f) != 4) {
+        fprintf(stderr, "Failed to read %.4s type\n", chunk_id);
+        return CALLBACK_ERROR;
+    }
+
+    length -= 4; // Account for format_id bytes
+
+    char tag[10];
+    snprintf(tag, sizeof(tag), "%.4s:%.4s", chunk_id, format_id);
+    if (state->callback) {
+        CallbackStatus status = state->callback(state, tag, length);
+        if (status == CALLBACK_ERROR) {
+            fprintf(stderr, "Failed to parse %s\n", tag);
+            return CALLBACK_ERROR;
+        } else if (status == CALLBACK_UNSUPPORTED) {
+            if (state->verbose_logging) {
+                fprintf(stderr, "Unsupported: %s (%d bytes)\n", tag, length);
+            }
+
+            // Skip unsupported LIST chunk
+            fseek(state->f, length, SEEK_CUR);
+            return CALLBACK_SUCCESS;
+        }
+    } else {
+        fprintf(stderr, "No callback provided to handle chunk %s\n", tag);
         return CALLBACK_ERROR;
     }
 
@@ -168,6 +207,11 @@ static CallbackStatus read_chunks(IffParseState *state, const char *format_id, u
         CallbackStatus status;
         if (strcmp(chunk_id, "FORM") == 0) {
             status = form_callback(state, chunk_id, header.chunk_len);
+        } else if (strcmp(chunk_id, "PROP") == 0) {
+            // FIXME: PROP should not be allowed outside a LIST
+            status = form_callback(state, chunk_id, header.chunk_len);
+        } else if (strcmp(chunk_id, "LIST") == 0) {
+            status = list_callback(state, chunk_id, header.chunk_len);
         } else {
             status = state->callback(state, chunk_id, header.chunk_len);
         }

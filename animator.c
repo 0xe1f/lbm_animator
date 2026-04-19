@@ -26,6 +26,7 @@
 retro_log_printf_t log_cb;
 
 typedef struct {
+    const Cycle *cycle;
     unsigned long cycle_rate_us;
     unsigned long last_cycle_us;
     unsigned short length;
@@ -46,7 +47,8 @@ static void *pixel_buffer = NULL;
 static size_t pixel_buffer_size = 0;
 static int pixel_buffer_bpp = 4;
 static CycleState *cycle_states = NULL;
-static uint32_t *palette = NULL;
+static uint32_t *base_palette = NULL;
+static uint32_t *animated_palette = NULL;
 static bool color_blending_enabled = true;
 static FILE *audio_file = NULL;
 static OggVorbis_File vorbis_file = { 0 };
@@ -68,6 +70,7 @@ static void cycle_palette();
 static void update_pixel_buffer();
 static void check_variables();
 static void fill_audio_buffer();
+static void apply_overlay(const LbmImage *overlay);
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -253,13 +256,18 @@ bool retro_load_game(const struct retro_game_info *info)
     }
 
     // Initialize dynamic palette
-    palette = malloc(image.n_palette * sizeof(uint32_t));
-    if (palette == NULL) {
-        log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for palette\n");
+    base_palette = malloc(image.n_palette * sizeof(uint32_t));
+    if (base_palette == NULL) {
+        log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for base palette\n");
         free_buffers();
         return false;
     }
-    memcpy(palette, image.palette, image.n_palette * sizeof(uint32_t));
+    animated_palette = malloc(image.n_palette * sizeof(uint32_t));
+    if (animated_palette == NULL) {
+        log_cb(RETRO_LOG_ERROR, "Failed to allocate memory for animated palette\n");
+        free_buffers();
+        return false;
+    }
 
     // Initialize cycle states
     cycle_states = malloc(image.n_cycles * sizeof(CycleState));
@@ -268,16 +276,9 @@ bool retro_load_game(const struct retro_game_info *info)
         free_buffers();
         return false;
     }
-    for (size_t i = 0; i < image.n_cycles; i++) {
-        Cycle *cycle = &image.cycles[i];
-        int cycle_size = (cycle->high - cycle->low) + 1;
-        cycle_states[i] = (CycleState) {
-            .cycle_rate_us = (unsigned long)(RATE_SCALE_US / (FPS * cycle->rate)),
-            .last_cycle_us = 0,
-            .length = (unsigned short) cycle_size,
-            .offset = 0,
-        };
-    }
+
+    // Set up the base palette
+    apply_overlay(&image);
 
     return true;
 }
@@ -345,8 +346,10 @@ static void free_buffers()
     pixel_buffer_size = 0;
     free(cycle_states);
     cycle_states = NULL;
-    free(palette);
-    palette = NULL;
+    free(base_palette);
+    base_palette = NULL;
+    free(animated_palette);
+    animated_palette = NULL;
     ov_clear(&vorbis_file);
     svx8_free(&svx8_audio);
     if (audio_file) {
@@ -383,13 +386,13 @@ static void cycle_palette()
 {
     unsigned long current_time = micros();
     for (size_t i = 0; i < image.n_cycles; i++) {
-        Cycle *cycle = &image.cycles[i];
+        CycleState *state = &cycle_states[i];
+        const Cycle *cycle = state->cycle;
         if (cycle->rate == 0 || (cycle->flags & 0x01) == 0) {
             continue; // No cycling
         }
 
         // Advance the cycle state if enough time has passed
-        CycleState *state = &cycle_states[i];
         if (current_time - state->last_cycle_us >= state->cycle_rate_us) {
             // Advance the offset and wrap around the cycle range
             state->poffset = state->offset;
@@ -402,16 +405,16 @@ static void cycle_palette()
 
         // Update the palette entries for this cycle
         for (int j = 0; j < state->length; j++) {
-            uint32_t pcolor = image.palette[cycle->low + (state->poffset + j) % state->length].argb;
-            uint32_t color = image.palette[cycle->low + (state->offset + j) % state->length].argb;
+            uint32_t pcolor = base_palette[cycle->low + (state->poffset + j) % state->length];
+            uint32_t color = base_palette[cycle->low + (state->offset + j) % state->length];
             uint32_t blended_color = color_blending_enabled
                 ? blend_colors(color, pcolor, ratio)
                 : color;
 
             if (cycle->flags & 0x02) {
-                palette[cycle->low + j] = blended_color;
+                animated_palette[cycle->low + j] = blended_color;
             } else {
-                palette[cycle->high - j] = blended_color;
+                animated_palette[cycle->high - j] = blended_color;
             }
         }
     }
@@ -423,7 +426,7 @@ static void update_pixel_buffer()
     unsigned int *pp;
     for (i = 0, pp = pixel_buffer; i < image.width * image.height; i++, pp++) {
         unsigned int index = image.pixels[i];
-        *pp = palette[index];
+        *pp = animated_palette[index];
     }
 }
 
@@ -471,4 +474,42 @@ static void fill_audio_buffer()
             bytes_left -= bytes_read;
         }
     }
+}
+
+static void apply_overlay(const LbmImage *overlay)
+{
+    // Initialize dynamic palette
+    if (animated_palette == NULL) {
+        log_cb(RETRO_LOG_ERROR, "Palette not initialized\n");
+        return;
+    } else if (overlay->n_palette != image.n_palette) {
+        log_cb(RETRO_LOG_ERROR, "Overlay palette size mismatch\n");
+        return;
+    }
+
+    // Initialize cycle states
+    if (cycle_states == NULL) {
+        log_cb(RETRO_LOG_ERROR, "Cycle states not initialized\n");
+        return;
+    } else if (overlay->n_cycles != image.n_cycles) {
+        log_cb(RETRO_LOG_ERROR, "Overlay cycle size mismatch\n");
+        return;
+    }
+
+    // Apply overlays
+    memcpy(base_palette, overlay->palette, overlay->n_palette * sizeof(uint32_t));
+    memcpy(animated_palette, overlay->palette, overlay->n_palette * sizeof(uint32_t));
+    for (size_t i = 0; i < overlay->n_cycles; i++) {
+        const Cycle *cycle = &overlay->cycles[i];
+        int cycle_size = (cycle->high - cycle->low) + 1;
+        cycle_states[i] = (CycleState) {
+            .cycle = cycle,
+            .cycle_rate_us = (unsigned long)(RATE_SCALE_US / (FPS * cycle->rate)),
+            .last_cycle_us = 0,
+            .length = (unsigned short) cycle_size,
+            .offset = 0,
+        };
+    }
+
+    log_cb(RETRO_LOG_INFO, "Overlay successfully applied\n");
 }

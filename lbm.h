@@ -36,7 +36,9 @@ typedef struct {
     uint16_t high;
 } Cycle;
 
-typedef struct {
+struct LbmImage;
+
+struct LbmImage {
     uint32_t width;
     uint32_t height;
     uint8_t *pixels;
@@ -48,7 +50,12 @@ typedef struct {
     uint16_t n_cycles;
     uint16_t s_cycles;
     char *name;
-} LbmImage;
+    struct LbmImage *bbms;
+    uint16_t n_bbms;
+    uint16_t s_bbms;
+};
+
+typedef struct LbmImage LbmImage;
 
 bool lbm_read_mem(LbmImage *image, const void *data, size_t size);
 bool lbm_read_file(LbmImage *image, const char *path);

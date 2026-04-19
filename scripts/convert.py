@@ -173,7 +173,7 @@ def write_crng(output_file, data):
 
     output_file.write(struct.pack('>H', 0)) # padding
     output_file.write(struct.pack('>H', data['rate'])) # rate
-    output_file.write(struct.pack('>H', flags)) # flags
+    output_file.write(struct.pack('<H', flags)) # flags
     output_file.write(struct.pack('>B', data['low']))  # low
     output_file.write(struct.pack('>B', data['high'])) # high
 
