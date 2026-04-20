@@ -67,6 +67,11 @@ typedef struct {
     uint8_t b;
 } ColorMapEntry;
 
+typedef struct {
+    uint32_t offset_secs;
+    uint8_t index;
+} __attribute__((packed)) TimelineEntry;
+
 static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length);
@@ -208,38 +213,31 @@ static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length)
 {
-    if (length % 3 != 0) {
+    if (length % sizeof(ColorMapEntry) != 0) {
         fprintf(stderr, "Invalid CMAP chunk length: %u\n", length);
         return CALLBACK_ERROR;
     }
 
-    uint16_t n_entries = length / 3;
-    for (uint16_t i = 0; i < n_entries; i++) {
-        ColorMapEntry entry;
+    uint16_t n_palette = length / sizeof(ColorMapEntry);
+    LbmImage *image = state->current;
+    image->palette = malloc(n_palette * sizeof(Color));
+    if (image->palette == NULL) {
+        fprintf(stderr, "Failed to allocate memory for palette\n");
+        return CALLBACK_ERROR;
+    }
+
+    image->n_palette = n_palette;
+    for (uint16_t i = 0; i < n_palette; i++) {
+        ColorMapEntry entry = { 0 };
         if (fread(&entry, sizeof(entry), 1, state->base.f) != 1) {
             fprintf(stderr, "Failed to read palette entry\n");
             return CALLBACK_ERROR;
         }
+        image->palette[i] = CMAP_ENTRY_TO_COLOR(entry);
+    }
 
-        LbmImage *image = state->current;
-        if (image == NULL) {
-            fprintf(stderr, "CMAP chunk found before image context is set\n");
-            return CALLBACK_ERROR;
-        }
-        if (image->n_palette + n_entries > image->s_palette) {
-            uint16_t new_size = image->s_palette == 0
-                ? PALETTE_CAP_INITIAL
-                : image->s_palette + PALETTE_CAP_INCREMENT;
-            Color *new_palette = realloc(image->palette, new_size * sizeof(Color));
-            if (new_palette == NULL) {
-                fprintf(stderr, "Failed to allocate memory for palette\n");
-                return CALLBACK_ERROR;
-            }
-            image->palette = new_palette;
-            image->s_palette = new_size;
-        }
-
-        image->palette[image->n_palette++] = CMAP_ENTRY_TO_COLOR(entry);
+    if (state->base.verbose_logging) {
+        printf("Read %u palette entries\n", n_palette);
     }
 
     return CALLBACK_SUCCESS;
@@ -305,26 +303,30 @@ static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_tmln_chunk(LbmParseState *state, uint32_t length)
 {
-    size_t struct_size = sizeof(TimelineEntry);
-    if (length % struct_size != 0) {
+    if (length % sizeof(TimelineEntry) != 0) {
         fprintf(stderr, "Invalid TMLN chunk length: %u\n", length);
         return CALLBACK_ERROR;
     }
 
     LbmImage *image = state->current;
-    image->timelines = malloc(length);
+    uint16_t n_timelines = length / sizeof(TimelineEntry);
+    image->timelines = malloc(n_timelines * sizeof(TimelineItem));
     if (image->timelines == NULL) {
         fprintf(stderr, "Failed to allocate memory for timelines\n");
         return CALLBACK_ERROR;
     }
 
-    image->n_timelines = length / struct_size;
-    for (uint16_t i = 0; i < image->n_timelines; i++) {
-        if (fread(&image->timelines[i], struct_size, 1, state->base.f) != 1) {
+    image->n_timelines = n_timelines;
+    for (uint16_t i = 0; i < n_timelines; i++) {
+        TimelineEntry entry = { 0 };
+        if (fread(&entry, sizeof(entry), 1, state->base.f) != 1) {
             fprintf(stderr, "Failed to read timeline entry\n");
             return CALLBACK_ERROR;
         }
-        image->timelines[i].offset_secs = BE2LE32(image->timelines[i].offset_secs);
+        image->timelines[i] = (TimelineItem) {
+            .offset_secs = BE2LE32(entry.offset_secs),
+            .index = entry.index,
+        };
     }
 
     if (state->base.verbose_logging) {
@@ -350,9 +352,9 @@ static void lbm_dump_indented(const LbmImage *image, char *indent)
     // }
     printf("%sTimelines (%u)\n", indent, image->n_timelines);
     // for (uint16_t i = 0; i < image->n_timelines; i++) {
-    //     TimelineEntry *e = &image->timelines[i];
+    //     TimelineItem *item = &image->timelines[i];
     //     printf("%s  %u: offset=%u secs, index=%u\n",
-    //         indent, i, e->offset_secs, e->index);
+    //         indent, i, item->offset_secs, item->index);
     // }
 
     printf("%sBBMs (%u)\n", indent, image->n_bbms);
@@ -435,7 +437,6 @@ void lbm_free(LbmImage *image)
     image->n_pixels = 0;
     image->palette = NULL;
     image->n_palette = 0;
-    image->s_palette = 0;
     image->cycles = NULL;
     image->n_cycles = 0;
     image->s_cycles = 0;

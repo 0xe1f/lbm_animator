@@ -449,7 +449,7 @@ static void cycle_overlay()
 
     static unsigned long last_time = 0;
     unsigned long current_time = micros();
-    if (current_time - last_time >= 1000UL) {
+    if (current_time - last_time >= 1UL) {
         last_time = current_time;
 
         int index1, index2;
@@ -610,6 +610,8 @@ static void apply_overlay(const LbmImage *overlay)
             .offset = 0,
         };
     }
+
+    log_cb(RETRO_LOG_INFO, "Overlay applied\n");
 }
 
 static void blend_overlay(const LbmImage *overlay1, const LbmImage *overlay2, float ratio)

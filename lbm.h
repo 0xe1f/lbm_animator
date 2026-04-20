@@ -39,7 +39,7 @@ typedef struct {
 typedef struct {
     uint32_t offset_secs;
     uint8_t index;
-} __attribute__((packed)) TimelineEntry;
+} TimelineItem;
 
 struct LbmImage;
 
@@ -50,7 +50,6 @@ struct LbmImage {
     uint32_t n_pixels;
     Color *palette;
     uint16_t n_palette;
-    uint16_t s_palette;
     Cycle *cycles;
     uint16_t n_cycles;
     uint16_t s_cycles;
@@ -58,7 +57,7 @@ struct LbmImage {
     struct LbmImage *bbms;
     uint16_t n_bbms;
     uint16_t s_bbms;
-    TimelineEntry *timelines;
+    TimelineItem *timelines;
     uint16_t n_timelines;
 };
 
