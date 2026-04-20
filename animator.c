@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include <vorbis/vorbisfile.h>
 #include "libretro.h"
@@ -56,6 +57,9 @@ static Svx8Audio svx8_audio = { 0 };
 static uint32_t sample_pos = 0;
 static char sound_buffer[AUDIO_BUFFER_SIZE] = { 0 };
 static char *system_directory = NULL;
+static time_t start_time_real = 0;
+static time_t start_time_logical = 0;
+static float seconds_per_second = 1.0f;
 
 static retro_video_refresh_t video_cb;
 static retro_input_poll_t input_poll_cb;
@@ -66,11 +70,15 @@ static retro_audio_sample_batch_t audio_cb;
 static void free_buffers();
 static unsigned long micros();
 static uint32_t blend_colors(uint32_t c1, uint32_t c2, float delta);
+static int find_index_for_timeline_offset(uint32_t sec_offset);
+static void cycle_overlay();
 static void cycle_palette();
 static void update_pixel_buffer();
 static void check_variables();
 static void fill_audio_buffer();
 static void apply_overlay(const LbmImage *overlay);
+static void blend_overlay(const LbmImage *overlay1, const LbmImage *overlay2, float ratio);
+static uint32_t seconds_since_midnight(float multiplier);
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -320,6 +328,9 @@ void retro_init(void)
     if (!environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_directory)) {
         log_cb(RETRO_LOG_WARN, "System directory not available.\n");
     }
+
+    start_time_real = time(NULL);
+    start_time_logical = start_time_real;
 }
 
 void retro_deinit(void)
@@ -332,6 +343,7 @@ void retro_reset(void)
 
 void retro_run(void)
 {
+    cycle_overlay();
     cycle_palette();
     update_pixel_buffer();
     fill_audio_buffer();
@@ -375,11 +387,87 @@ static uint32_t blend_colors(uint32_t c1, uint32_t c2, float ratio)
     uint8_t g2 = (c2 >> 8) & 0xFF;
     uint8_t b2 = c2 & 0xFF;
 
-    uint8_t r = (uint8_t)(r1 * ratio + r2 * (1.0f - ratio));
-    uint8_t g = (uint8_t)(g1 * ratio + g2 * (1.0f - ratio));
-    uint8_t b = (uint8_t)(b1 * ratio + b2 * (1.0f - ratio));
+    uint8_t r = (uint8_t)(r1 * (1.0f - ratio) + r2 * ratio);
+    uint8_t g = (uint8_t)(g1 * (1.0f - ratio) + g2 * ratio);
+    uint8_t b = (uint8_t)(b1 * (1.0f - ratio) + b2 * ratio);
 
     return (r << 16) | (g << 8) | b;
+}
+
+static int find_index_for_timeline_offset(uint32_t sec_offset)
+{
+    if (image.n_timelines == 0 || image.n_bbms == 0) {
+        return -1;
+    } else if (sec_offset <= image.timelines[0].offset_secs) {
+        return image.timelines[0].index;
+    } else if (sec_offset >= image.timelines[image.n_timelines - 1].offset_secs) {
+        return image.timelines[image.n_timelines - 1].index;
+    }
+
+    for (size_t i = image.n_timelines - 1; i >= 0; i--) {
+        if (sec_offset >= image.timelines[i].offset_secs) {
+            return image.timelines[i].index;
+        }
+    }
+
+    return -1;
+}
+
+static bool find_indices_for_timeline_offset(uint32_t sec_offset, int *out_index1, int *out_index2, float *out_ratio)
+{
+    if (image.n_timelines == 0 || image.n_bbms == 0) {
+        return false;
+    } else if (sec_offset <= image.timelines[0].offset_secs) {
+        *out_index1 = image.timelines[0].index;
+        *out_index2 = image.timelines[0].index;
+        *out_ratio = 0.0f;
+        return true;
+    } else if (sec_offset >= image.timelines[image.n_timelines - 1].offset_secs) {
+        *out_index1 = image.timelines[image.n_timelines - 1].index;
+        *out_index2 = image.timelines[image.n_timelines - 1].index;
+        *out_ratio = 0.0f;
+        return true;
+    }
+
+    for (size_t i = image.n_timelines - 1; i >= 0; i--) {
+        if (sec_offset >= image.timelines[i].offset_secs) {
+            *out_index1 = image.timelines[i].index;
+            *out_index2 = image.timelines[i + 1].index;
+            *out_ratio = (sec_offset - image.timelines[i].offset_secs) / (float)(image.timelines[i + 1].offset_secs - image.timelines[i].offset_secs);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void cycle_overlay()
+{
+    if (image.n_timelines == 0 || image.n_bbms == 0) {
+        return; // No timelines or overlays to apply
+    }
+
+    static unsigned long last_time = 0;
+    unsigned long current_time = micros();
+    if (current_time - last_time >= 1000UL) {
+        last_time = current_time;
+
+        int index1, index2;
+        float ratio;
+        uint32_t secs = seconds_since_midnight(seconds_per_second);
+        if (find_indices_for_timeline_offset(secs, &index1, &index2, &ratio)) {
+            if (index1 < 0 || index2 >= image.n_bbms) {
+                log_cb(RETRO_LOG_WARN, "Invalid index1 for offset: %u secs\n", secs);
+                return;
+            } else if (index2 < 0 || index2 >= image.n_bbms) {
+                log_cb(RETRO_LOG_WARN, "Invalid index2 for offset: %u secs\n", secs);
+                return;
+            }
+            log_cb(RETRO_LOG_INFO, "secs: %u, (%d, %d, %.2f)\n",
+                secs, index1, index2, ratio);
+            blend_overlay(&image.bbms[index1], &image.bbms[index2], ratio);
+        }
+    }
 }
 
 static void cycle_palette()
@@ -408,7 +496,7 @@ static void cycle_palette()
             uint32_t pcolor = base_palette[cycle->low + (state->poffset + j) % state->length];
             uint32_t color = base_palette[cycle->low + (state->offset + j) % state->length];
             uint32_t blended_color = color_blending_enabled
-                ? blend_colors(color, pcolor, ratio)
+                ? blend_colors(pcolor, color, ratio)
                 : color;
 
             if (cycle->flags & 0x02) {
@@ -438,6 +526,16 @@ static void check_variables()
     environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var);
     if (var.value && strcmp(var.value, "disabled") == 0) {
         color_blending_enabled = false;
+    }
+
+    var.key = "lbm_animator_seconds_per_second";
+    environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var);
+    if (var.value) {
+        seconds_per_second = atof(var.value);
+        if (seconds_per_second <= 0.0f) {
+            log_cb(RETRO_LOG_WARN, "Invalid value for seconds_per_second: %s\n", var.value);
+            seconds_per_second = 1.0f;
+        }
     }
 }
 
@@ -483,7 +581,8 @@ static void apply_overlay(const LbmImage *overlay)
         log_cb(RETRO_LOG_ERROR, "Palette not initialized\n");
         return;
     } else if (overlay->n_palette != image.n_palette) {
-        log_cb(RETRO_LOG_ERROR, "Overlay palette size mismatch\n");
+        log_cb(RETRO_LOG_ERROR, "Overlay palette size mismatch (%u != %u)\n",
+            overlay->n_palette, image.n_palette);
         return;
     }
 
@@ -492,7 +591,8 @@ static void apply_overlay(const LbmImage *overlay)
         log_cb(RETRO_LOG_ERROR, "Cycle states not initialized\n");
         return;
     } else if (overlay->n_cycles != image.n_cycles) {
-        log_cb(RETRO_LOG_ERROR, "Overlay cycle size mismatch\n");
+        log_cb(RETRO_LOG_ERROR, "Overlay cycle size mismatch (%u != %u)\n",
+            overlay->n_cycles, image.n_cycles);
         return;
     }
 
@@ -510,6 +610,39 @@ static void apply_overlay(const LbmImage *overlay)
             .offset = 0,
         };
     }
+}
 
-    log_cb(RETRO_LOG_INFO, "Overlay successfully applied\n");
+static void blend_overlay(const LbmImage *overlay1, const LbmImage *overlay2, float ratio)
+{
+    // Initialize dynamic palette
+    if (animated_palette == NULL) {
+        log_cb(RETRO_LOG_ERROR, "Palette not initialized\n");
+        return;
+    } else if (overlay1->n_palette != overlay2->n_palette) {
+        log_cb(RETRO_LOG_ERROR, "Overlay palette size mismatch (%u != %u)\n",
+            overlay1->n_palette, overlay2->n_palette);
+        return;
+    } else if (overlay1->n_palette != image.n_palette) {
+        log_cb(RETRO_LOG_ERROR, "Base palette size mismatch (%u != %u)\n",
+            overlay1->n_palette, image.n_palette);
+        return;
+    }
+
+    // Apply blended palette
+    for (size_t i = 0; i < overlay1->n_palette; i++) {
+        base_palette[i] = blend_colors(overlay1->palette[i].argb,
+            overlay2->palette[i].argb, ratio);
+    }
+    // Apply to animated palette
+    memcpy(animated_palette, base_palette, image.n_palette * sizeof(uint32_t));
+}
+
+static uint32_t seconds_since_midnight(float multiplier)
+{
+    time_t now = time(NULL);
+    time_t logical_now = start_time_logical + (time_t)((now - start_time_real) * multiplier);
+    struct tm *lt = localtime(&logical_now);
+    uint32_t seconds_since_midnight = lt->tm_hour * 3600 + lt->tm_min * 60 + lt->tm_sec;
+
+    return seconds_since_midnight;
 }

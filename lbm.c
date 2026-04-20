@@ -343,11 +343,17 @@ static void lbm_dump_indented(const LbmImage *image, char *indent)
     //     printf("%s  %d: 0x%08x\n", indent, i, image->palette[i].argb);
     // }
     printf("%sCycles (%u)\n", indent, image->n_cycles);
-    for (uint16_t i = 0; i < image->n_cycles; i++) {
-        Cycle *c = &image->cycles[i];
-        printf("%s  %u: flags=0x%02x, rate=%u, low=%u, high=%u\n",
-            indent, i, c->flags, c->rate, c->low, c->high);
-    }
+    // for (uint16_t i = 0; i < image->n_cycles; i++) {
+    //     Cycle *c = &image->cycles[i];
+    //     printf("%s  %u: flags=0x%02x, rate=%u, low=%u, high=%u\n",
+    //         indent, i, c->flags, c->rate, c->low, c->high);
+    // }
+    printf("%sTimelines (%u)\n", indent, image->n_timelines);
+    // for (uint16_t i = 0; i < image->n_timelines; i++) {
+    //     TimelineEntry *e = &image->timelines[i];
+    //     printf("%s  %u: offset=%u secs, index=%u\n",
+    //         indent, i, e->offset_secs, e->index);
+    // }
 
     printf("%sBBMs (%u)\n", indent, image->n_bbms);
     char next_indent[256];
