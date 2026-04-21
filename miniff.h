@@ -37,18 +37,17 @@ typedef enum {
 struct IffParseState;
 
 typedef CallbackStatus (*ChunkCallback)(struct IffParseState *state, char *chunk_id, uint32_t length);
+typedef CallbackStatus (*EnterGroupCallback)(struct IffParseState *state, char *chunk_id);
+typedef void (*ExitGroupCallback)(struct IffParseState *state, char *chunk_id);
 
 typedef struct IffParseState {
     FILE *f;
-    ChunkCallback callback;
+    ChunkCallback on_read_chunk;
+    EnterGroupCallback on_enter_group;
+    ExitGroupCallback on_exit_group;
     const char *format_id;
     bool verbose_logging;
 } IffParseState;
-
-typedef struct {
-    char chunk_id[4];
-    uint32_t chunk_len;
-} ChunkHeader;
 
 bool iff_read_file(IffParseState *state);
 bool iff_read_text_chunk(IffParseState *state, uint32_t chunk_length, char **dest);

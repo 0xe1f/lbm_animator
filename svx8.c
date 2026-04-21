@@ -37,19 +37,33 @@ typedef struct {
     uint32_t volume;
 } VoiceHeader;
 
-static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
+static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id);
+static void exit_group_callback(IffParseState *state, char *chunk_id);
+static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_vhdr_chunk(Svx8ParseState *state, uint32_t length);
 static CallbackStatus read_name_chunk(Svx8ParseState *state, uint32_t length);
 static CallbackStatus read_anno_chunk(Svx8ParseState *state, uint32_t length);
 static CallbackStatus read_body_chunk(Svx8ParseState *state, uint32_t length);
 
-static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
+static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id)
 {
     Svx8ParseState *svx8_state = (Svx8ParseState *) state;
     if (strcmp(chunk_id, "FORM:8SVX") == 0) {
         svx8_state->form_present = true;
         return CALLBACK_SUCCESS;
-    } else if (strcmp(chunk_id, "VHDR") == 0) {
+    }
+    return CALLBACK_UNSUPPORTED;
+}
+
+static void exit_group_callback(IffParseState *state, char *chunk_id)
+{
+    // No-op
+}
+
+static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
+{
+    Svx8ParseState *svx8_state = (Svx8ParseState *) state;
+    if (strcmp(chunk_id, "VHDR") == 0) {
         return read_vhdr_chunk(svx8_state, length);
     } else if (strcmp(chunk_id, "ANNO") == 0) {
         return read_anno_chunk(svx8_state, length);
@@ -264,7 +278,12 @@ bool svx8_read_mem(Svx8Audio *audio, const void *data, size_t size)
     }
 
     Svx8ParseState state = {
-        .base = { .f = mem_file, .callback = chunk_callback },
+        .base = {
+            .f = mem_file,
+            .on_enter_group = enter_group_callback,
+            .on_exit_group = exit_group_callback,
+            .on_read_chunk = read_chunk_callback,
+        },
         .audio = audio,
     };
     bool success = iff_read_file((IffParseState *) &state);
@@ -291,7 +310,12 @@ bool svx8_read_file(Svx8Audio *audio, const char *path)
     }
 
     Svx8ParseState state = {
-        .base = { .f = f, .callback = chunk_callback },
+        .base = {
+            .f = f,
+            .on_enter_group = enter_group_callback,
+            .on_exit_group = exit_group_callback,
+            .on_read_chunk = read_chunk_callback,
+        },
         .audio = audio,
     };
     bool success = iff_read_file((IffParseState *) &state);

@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "miniff.h"
+#include "stack.h"
 #include "lbm.h"
 
 #define CYCLE_CAP_INITIAL     16
@@ -34,7 +35,7 @@ typedef struct {
     IffParseState base;
     LbmImage *image;
     bool is_rle_compressed;
-    LbmImage *current;
+    Stack group_stack;
 } LbmParseState;
 
 typedef struct {
@@ -72,7 +73,9 @@ typedef struct {
     uint8_t index;
 } __attribute__((packed)) TimelineEntry;
 
-static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
+static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id);
+static void exit_group_callback(IffParseState *state, char *chunk_id);
+static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length);
@@ -81,17 +84,20 @@ static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_tmln_chunk(LbmParseState *state, uint32_t length);
 static void lbm_dump_indented(const LbmImage *image, char *indent);
 
-static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
+static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id)
 {
     LbmParseState *lbm_state = (LbmParseState *) state;
     if (strcmp(chunk_id, "FORM:PBM ") == 0) {
-        if (lbm_state->current == NULL) {
+        if (lbm_state->group_stack.count == 0) {
             // Top-level FORM chunk
-            lbm_state->current = lbm_state->image;
+            stack_push(&lbm_state->group_stack, lbm_state->image);
         } else {
             // Nested FORM chunk (e.g. for BBM)
-            // FIXME: this is incorrect, since it is not recursive
-            LbmImage *parent = lbm_state->image;
+            LbmImage *parent;
+            if (!stack_peek(&lbm_state->group_stack, (void **) &parent)) {
+                fprintf(stderr, "Group stack is empty when trying to read parent\n");
+                return CALLBACK_ERROR;
+            }
             if (parent->n_bbms >= parent->s_bbms) {
                 uint16_t new_size = parent->s_bbms == 0
                     ? BBM_CAP_INITIAL
@@ -106,15 +112,49 @@ static CallbackStatus chunk_callback(IffParseState *state, char *chunk_id, uint3
             }
             LbmImage *new_image = &parent->bbms[parent->n_bbms++];
             memset(new_image, 0, sizeof(LbmImage));
-            lbm_state->current = new_image;
+            stack_push(&lbm_state->group_stack, new_image);
         }
         return CALLBACK_SUCCESS;
     } else if (strcmp(chunk_id, "PROP:PBM ") == 0) {
-        lbm_state->current = lbm_state->image;
+        void *parent;
+        if (stack_peek(&lbm_state->group_stack, &parent)) {
+            // PROP chunk descendants have PROP's parent as their parent
+            stack_push(&lbm_state->group_stack, parent);
+        } else {
+            // PROP chunk without a parent - this is an error
+            return CALLBACK_ERROR;
+        }
         return CALLBACK_SUCCESS;
     } else if (strcmp(chunk_id, "LIST:PBM ") == 0) {
+        void *parent;
+        if (stack_peek(&lbm_state->group_stack, &parent)) {
+            // LIST chunk descendants have LIST's parent as their parent
+            stack_push(&lbm_state->group_stack, parent);
+        } else {
+            // LIST chunk without a parent - treat as top-level
+            stack_push(&lbm_state->group_stack, lbm_state->image);
+        }
         return CALLBACK_SUCCESS;
-    } else if (strcmp(chunk_id, "BMHD") == 0) {
+    }
+    return CALLBACK_UNSUPPORTED;
+}
+
+static void exit_group_callback(IffParseState *state, char *chunk_id)
+{
+    LbmParseState *lbm_state = (LbmParseState *) state;
+    if (
+        strcmp(chunk_id, "FORM:PBM ") == 0 ||
+        strcmp(chunk_id, "LIST:PBM ") == 0 ||
+        strcmp(chunk_id, "PROP:PBM ") == 0
+    ) {
+        stack_pop(&lbm_state->group_stack, NULL);
+    }
+}
+
+static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)
+{
+    LbmParseState *lbm_state = (LbmParseState *) state;
+    if (strcmp(chunk_id, "BMHD") == 0) {
         return read_bmhd_chunk(lbm_state, length);
     } else if (strcmp(chunk_id, "CRNG") == 0) {
         return read_crng_chunk(lbm_state, length);
@@ -162,9 +202,9 @@ static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    LbmImage *image = state->current;
-    if (image == NULL) {
-        fprintf(stderr, "BMHD chunk found before image context is set\n");
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
         return CALLBACK_ERROR;
     }
     image->width = BE2LE16(bmhd.width);
@@ -182,9 +222,9 @@ static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    LbmImage *image = state->current;
-    if (image == NULL) {
-        fprintf(stderr, "CRNG chunk found before image context is set\n");
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
         return CALLBACK_ERROR;
     }
     if (image->n_cycles >= image->s_cycles) {
@@ -219,7 +259,11 @@ static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length)
     }
 
     uint16_t n_palette = length / sizeof(ColorMapEntry);
-    LbmImage *image = state->current;
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
+        return CALLBACK_ERROR;
+    }
     image->palette = malloc(n_palette * sizeof(Color));
     if (image->palette == NULL) {
         fprintf(stderr, "Failed to allocate memory for palette\n");
@@ -245,9 +289,9 @@ static CallbackStatus read_cmap_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
 {
-    LbmImage *image = state->current;
-    if (image == NULL) {
-        fprintf(stderr, "BODY chunk found before image context is set\n");
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
         return CALLBACK_ERROR;
     }
     image->n_pixels = image->width * image->height;
@@ -289,9 +333,9 @@ static CallbackStatus read_body_chunk(LbmParseState *state, uint32_t length)
 
 static CallbackStatus read_name_chunk(LbmParseState *state, uint32_t length)
 {
-    LbmImage *image = state->current;
-    if (image == NULL) {
-        fprintf(stderr, "NAME chunk found before image context is set\n");
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
         return CALLBACK_ERROR;
     }
     if (!iff_read_text_chunk(&state->base, length, &image->name)) {
@@ -308,7 +352,11 @@ static CallbackStatus read_tmln_chunk(LbmParseState *state, uint32_t length)
         return CALLBACK_ERROR;
     }
 
-    LbmImage *image = state->current;
+    LbmImage *image;
+    if (!stack_peek(&state->group_stack, (void **) &image)) {
+        fprintf(stderr, "Chunk found outside context\n");
+        return CALLBACK_ERROR;
+    }
     uint16_t n_timelines = length / sizeof(TimelineEntry);
     image->timelines = malloc(n_timelines * sizeof(TimelineItem));
     if (image->timelines == NULL) {
@@ -377,17 +425,22 @@ bool lbm_read_mem(LbmImage *image, const void *data, size_t size)
     }
 
     LbmParseState state = {
-        .base = { .f = mem_file, .callback = chunk_callback },
+        .base = {
+            .f = mem_file,
+            .on_enter_group = enter_group_callback,
+            .on_exit_group = exit_group_callback,
+            .on_read_chunk = read_chunk_callback,
+        },
         .image = image,
-        .current = NULL,
     };
     bool success = iff_read_file((IffParseState *) &state);
     fclose(mem_file);
 
-    if (state.current == NULL) {
-        fprintf(stderr, "Error: FORM chunk not found\n");
+    if (state.group_stack.count != 0) {
+        fprintf(stderr, "Error: malformed nesting\n");
         success = false;
     }
+    stack_free(&state.group_stack);
 
     if (!success) {
         lbm_free(image);
@@ -405,17 +458,22 @@ bool lbm_read_file(LbmImage *image, const char *path)
     }
 
     LbmParseState state = {
-        .base = { .f = f, .callback = chunk_callback },
+        .base = {
+            .f = f,
+            .on_enter_group = enter_group_callback,
+            .on_exit_group = exit_group_callback,
+            .on_read_chunk = read_chunk_callback,
+        },
         .image = image,
-        .current = NULL,
     };
     bool success = iff_read_file((IffParseState *) &state);
     fclose(f);
 
-    if (state.current == NULL) {
-        fprintf(stderr, "Error: FORM chunk not found\n");
+    if (state.group_stack.count != 0) {
+        fprintf(stderr, "Error: malformed nesting\n");
         success = false;
     }
+    stack_free(&state.group_stack);
 
     if (!success) {
         lbm_free(image);
