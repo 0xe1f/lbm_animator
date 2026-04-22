@@ -38,7 +38,7 @@ typedef struct {
 } VoiceHeader;
 
 static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id);
-static void exit_group_callback(IffParseState *state, char *chunk_id);
+static CallbackStatus exit_group_callback(IffParseState *state, char *chunk_id);
 static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_vhdr_chunk(Svx8ParseState *state, uint32_t length);
 static CallbackStatus read_name_chunk(Svx8ParseState *state, uint32_t length);
@@ -55,9 +55,10 @@ static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id)
     return CALLBACK_UNSUPPORTED;
 }
 
-static void exit_group_callback(IffParseState *state, char *chunk_id)
+static CallbackStatus exit_group_callback(IffParseState *state, char *chunk_id)
 {
     // No-op
+    return CALLBACK_SUCCESS;
 }
 
 static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)

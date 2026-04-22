@@ -38,7 +38,7 @@ struct IffParseState;
 
 typedef CallbackStatus (*ChunkCallback)(struct IffParseState *state, char *chunk_id, uint32_t length);
 typedef CallbackStatus (*EnterGroupCallback)(struct IffParseState *state, char *chunk_id);
-typedef void (*ExitGroupCallback)(struct IffParseState *state, char *chunk_id);
+typedef CallbackStatus (*ExitGroupCallback)(struct IffParseState *state, char *chunk_id);
 
 typedef struct IffParseState {
     FILE *f;

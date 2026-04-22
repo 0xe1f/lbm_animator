@@ -74,7 +74,7 @@ typedef struct {
 } __attribute__((packed)) TimelineEntry;
 
 static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id);
-static void exit_group_callback(IffParseState *state, char *chunk_id);
+static CallbackStatus exit_group_callback(IffParseState *state, char *chunk_id);
 static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length);
 static CallbackStatus read_bmhd_chunk(LbmParseState *state, uint32_t length);
 static CallbackStatus read_crng_chunk(LbmParseState *state, uint32_t length);
@@ -139,7 +139,7 @@ static CallbackStatus enter_group_callback(IffParseState *state, char *chunk_id)
     return CALLBACK_UNSUPPORTED;
 }
 
-static void exit_group_callback(IffParseState *state, char *chunk_id)
+static CallbackStatus exit_group_callback(IffParseState *state, char *chunk_id)
 {
     LbmParseState *lbm_state = (LbmParseState *) state;
     if (
@@ -147,8 +147,12 @@ static void exit_group_callback(IffParseState *state, char *chunk_id)
         strcmp(chunk_id, "LIST:PBM ") == 0 ||
         strcmp(chunk_id, "PROP:PBM ") == 0
     ) {
-        stack_pop(&lbm_state->group_stack, NULL);
+        if (!stack_pop(&lbm_state->group_stack, NULL)) {
+            fprintf(stderr, "Group stack is empty when trying to pop\n");
+            return CALLBACK_ERROR;
+        }
     }
+    return CALLBACK_SUCCESS;
 }
 
 static CallbackStatus read_chunk_callback(IffParseState *state, char *chunk_id, uint32_t length)

@@ -155,7 +155,9 @@ static CallbackStatus group_callback(IffParseState *state, char *chunk_id, uint3
     CallbackStatus read_status = read_chunks(state, tag, length);
 
     // Call exit group callback
-    state->on_exit_group(state, tag);
+    if (state->on_exit_group(state, tag) != CALLBACK_SUCCESS) {
+        fprintf(stderr, "Failed to exit group %s\n", tag);
+    }
 
     return read_status;
 }
