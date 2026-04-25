@@ -554,22 +554,26 @@ static void fill_audio_buffer()
         int frames = sizeof(sound_buffer) / bytes_per_frame;
         audio_cb((const int16_t *) sound_buffer, frames);
     } else if (audio_file != NULL) {
-        int bytes_per_frame = vorbis_file.vi->channels * 2;
+        int bytes_per_frame = 4;
+        int offset = 0;
         while (bytes_left > 0) {
             long bytes_read = ov_read(&vorbis_file,
-                sound_buffer, sizeof(sound_buffer),
+                sound_buffer + offset, bytes_left,
                 0, 2, 1, NULL);
             if (bytes_read == 0) {
                 // End of stream, loop back to start
                 ov_pcm_seek(&vorbis_file, 0);
             } else if (bytes_read < 0) {
-                // Error in audio stream; ignore
+                // Error in audio stream; abort
+                break;
             } else {
-                // Convert bytes read to frames and send to audio callback
-                unsigned int frames = bytes_read / bytes_per_frame;
-                audio_cb((const int16_t *) sound_buffer, frames);
+                offset += bytes_read;
+                bytes_left -= bytes_read;
             }
-            bytes_left -= bytes_read;
+        }
+        int frames = offset / bytes_per_frame;
+        if (frames > 0) {
+            audio_cb((const int16_t *) sound_buffer, frames);
         }
     }
 }
